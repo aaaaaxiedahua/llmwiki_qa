@@ -1,0 +1,383 @@
+#!/usr/bin/env python3
+"""LLM Wiki — local-first knowledge workspace CLI.
+
+Usage:
+    llmwiki open <workspace>         Init if needed + serve + open browser
+    llmwiki init <workspace>         Create .llmwiki/ + wiki/, index files
+    llmwiki serve <workspace>        Start API + web on localhost
+    llmwiki mcp <workspace>          Run stdio MCP server (for Claude config)
+    llmwiki mcp-config <workspace>   Print claude_desktop_config.json snippet
+    llmwiki reindex <workspace>      Force full rebuild of index.db
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import webbrowser
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent
+API_DIR = REPO_ROOT / "api"
+MCP_DIR = REPO_ROOT / "mcp"
+WEB_DIR = REPO_ROOT / "web"
+
+
+def _sanitize_name(name: str) -> str:
+    slug = name.lower().strip()
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+    slug = re.sub(r"[\s-]+", "-", slug).strip("-")
+    return slug or "wiki"
+
+
+def cmd_init(workspace: str) -> None:
+    ws = Path(workspace).resolve()
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "wiki").mkdir(exist_ok=True)
+    (ws / ".llmwiki").mkdir(exist_ok=True)
+    (ws / ".llmwiki" / "cache").mkdir(exist_ok=True)
+
+    db_path = ws / ".llmwiki" / "index.db"
+    if db_path.exists():
+        print(f"Workspace already initialized: {ws}")
+        print(f"  index.db: {db_path}")
+        return
+
+    # Initialize SQLite
+    import sqlite3
+    schema_path = REPO_ROOT / "shared" / "sqlite_schema.sql"
+    if not schema_path.exists():
+        print(f"Error: schema not found at {schema_path}", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+    import uuid
+    user_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, "local"))
+    ws_id = str(uuid.uuid4())
+    ws_name = ws.name
+
+    conn.execute(
+        "INSERT INTO workspace (id, name, description, user_id) VALUES (?, ?, '', ?)",
+        (ws_id, ws_name, user_id),
+    )
+
+    # Scaffold the wiki overview. Activity is captured in knowledge_base_events.
+    doc1_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO documents (id, user_id, filename, title, path, relative_path, source_kind, "
+        "file_type, status, content, tags, version, document_number) "
+        "VALUES (?, ?, 'overview.md', 'Overview', '/wiki/', 'wiki/overview.md', 'wiki', "
+        "'md', 'ready', ?, '[]', 0, 1)",
+        (doc1_id, user_id,
+         f"This wiki tracks research on {ws_name}.\n\n## Key Findings\n\nNo sources ingested yet."),
+    )
+
+    conn.commit()
+    conn.close()
+
+    # Write actual wiki files
+    overview = ws / "wiki" / "overview.md"
+    if not overview.exists():
+        overview.write_text(
+            f"This wiki tracks research on {ws_name}.\n\n"
+            "## Key Findings\n\nNo sources ingested yet.\n",
+            encoding="utf-8",
+        )
+
+    # Index existing files
+    _index_existing_files(ws, db_path, user_id, ws_id)
+
+    print(f"✓ Initialized workspace: {ws}")
+    print(f"  wiki/overview.md — created")
+    print(f"  .llmwiki/index.db — created")
+
+
+def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> None:
+    """Index existing files in the workspace into SQLite."""
+    import hashlib
+    import uuid
+    import sqlite3
+
+    ignore_dirs = {".llmwiki", ".git", "node_modules", "__pycache__", ".venv", "venv"}
+    indexed = 0
+
+    conn = sqlite3.connect(str(db_path))
+
+    # Get already-indexed paths
+    cursor = conn.execute("SELECT relative_path FROM documents")
+    existing = {row[0] for row in cursor.fetchall()}
+
+    for root_path, dirs, files in os.walk(ws):
+        # Skip ignored directories
+        dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
+
+        for filename in files:
+            if filename.startswith("."):
+                continue
+
+            full = Path(root_path) / filename
+            relative = full.relative_to(ws).as_posix()
+
+            if relative in existing:
+                continue
+
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            stat = full.stat()
+
+            # Determine path (directory) and source_kind
+            parts = relative.split("/")
+            if len(parts) > 1:
+                dir_path = "/" + "/".join(parts[:-1]) + "/"
+            else:
+                dir_path = "/"
+            source_kind = "wiki" if relative.startswith("wiki/") else "source"
+
+            # Derive title
+            stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+            title = stem.replace("-", " ").replace("_", " ").strip().title()
+
+            # Keep in sync with domain.file_types.SIMPLE_TEXT_TYPES
+            content = None
+            text_types = {
+                "md", "txt", "csv", "svg", "json", "xml",
+                "yaml", "yml", "toml", "ini", "cfg", "rst", "tex", "latex",
+            }
+            if ext in text_types:
+                try:
+                    content = full.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+
+            doc_id = str(uuid.uuid4())
+            content_hash = hashlib.sha256(full.read_bytes()).hexdigest() if full.stat().st_size < 100_000_000 else None
+
+            try:
+                conn.execute(
+                    "INSERT INTO documents (id, user_id, filename, title, path, relative_path, "
+                    "source_kind, file_type, file_size, status, content, tags, version, "
+                    "content_hash, mtime_ns, last_indexed_at, document_number) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, '[]', 0, ?, ?, datetime('now'), "
+                    "(SELECT COALESCE(MAX(document_number), 0) + 1 FROM documents))",
+                    (doc_id, user_id, filename, title, dir_path, relative,
+                     source_kind, ext or "bin", stat.st_size, content,
+                     content_hash, int(stat.st_mtime_ns)),
+                )
+                indexed += 1
+            except Exception as e:
+                print(f"  Warning: could not index {relative}: {e}", file=sys.stderr)
+
+    conn.commit()
+    conn.close()
+
+    if indexed > 0:
+        print(f"✓ Indexed {indexed} existing file(s)")
+
+
+def cmd_serve(workspace: str, open_browser: bool = True) -> None:
+    ws = Path(workspace).resolve()
+    if not (ws / ".llmwiki" / "index.db").exists():
+        print(f"Workspace not initialized. Run: llmwiki init {ws}", file=sys.stderr)
+        sys.exit(1)
+
+    env = os.environ.copy()
+    env["MODE"] = "local"
+    env["WORKSPACE_PATH"] = str(ws)
+    env["DATABASE_URL"] = ""
+    env["APP_URL"] = "http://localhost:3000"
+    env["API_URL"] = "http://localhost:8000"
+
+    print(f"Starting LLM Wiki for: {ws}")
+    print(f"  API: http://localhost:8000")
+    print(f"  Web: http://localhost:3000")
+    print(f"  MCP: llmwiki mcp-config {ws}")
+    print()
+
+    # Start API server
+    api_proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"],
+        cwd=str(API_DIR),
+        env=env,
+    )
+
+    # Start web dev server
+    web_env = env.copy()
+    web_env["NEXT_PUBLIC_MODE"] = "local"
+    web_env["NEXT_PUBLIC_API_URL"] = "http://localhost:8000"
+    npm = shutil.which("pnpm") or shutil.which("npm")
+    if npm is None:
+        print(
+            "Error: neither pnpm nor npm found on PATH. Install Node.js 20+ "
+            "and re-run.",
+            file=sys.stderr,
+        )
+        api_proc.terminate()
+        sys.exit(1)
+    # dev:turbo (turbopack) instead of webpack dev: Next 16's bundled webpack 5.98
+    # crashes on pdfjs-dist under eval sourcemaps (vercel/next.js#89177), and Next
+    # force-reverts user devtool overrides in dev.
+    web_proc = subprocess.Popen(
+        [npm, "run", "dev:turbo"],
+        cwd=str(WEB_DIR),
+        env=web_env,
+    )
+
+    _supervise(api_proc, web_proc, open_browser)
+
+
+def _supervise(api_proc: subprocess.Popen, web_proc: subprocess.Popen, open_browser: bool) -> None:
+    """Run until either server exits or the user interrupts, then stop both."""
+    try:
+        if open_browser:
+            time.sleep(3)
+            webbrowser.open("http://localhost:3000/wikis")
+        while True:
+            time.sleep(0.5)
+            if api_proc.poll() is not None:
+                print("\nAPI server exited — shutting down web server.", file=sys.stderr)
+                break
+            if web_proc.poll() is not None:
+                print("\nWeb server exited — shutting down API server.", file=sys.stderr)
+                break
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        for proc in (api_proc, web_proc):
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in (api_proc, web_proc):
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
+
+def cmd_open(workspace: str) -> None:
+    ws = Path(workspace).resolve()
+    if not (ws / ".llmwiki" / "index.db").exists():
+        cmd_init(str(ws))
+    cmd_serve(str(ws), open_browser=True)
+
+
+def cmd_mcp(workspace: str) -> None:
+    ws = Path(workspace).resolve()
+    if not (ws / ".llmwiki" / "index.db").exists():
+        cmd_init(str(ws))
+
+    # local_server lives in mcp/; chdir so `python -m local_server` resolves
+    # the module no matter where the CLI was invoked from (Claude Desktop /
+    # Code launches this with cwd set to ~ on macOS).
+    # Windows os.exec* detaches from the parent's process handle, which breaks
+    # Claude Desktop's stdio lifecycle — spawn and wait there instead.
+    os.chdir(str(MCP_DIR))
+    cmd = [sys.executable, "-m", "local_server", "--workspace", str(ws)]
+    if sys.platform == "win32":
+        sys.exit(subprocess.call(cmd))
+    os.execvp(sys.executable, cmd)
+
+
+def cmd_mcp_config(workspace: str, name: str | None = None) -> None:
+    ws = Path(workspace).resolve()
+    server_name = name or f"llmwiki-{_sanitize_name(ws.name)}"
+    llmwiki_path = str(REPO_ROOT / "llmwiki")
+
+    # Launch via the current interpreter: shebangs don't work on Windows, and
+    # this pins the venv python (Claude Desktop won't have it activated).
+    config = {
+        "mcpServers": {
+            server_name: {
+                "command": sys.executable,
+                "args": [llmwiki_path, "mcp", str(ws)],
+            }
+        }
+    }
+
+    print(f"# Add to claude_desktop_config.json:")
+    print(f"# This MCP server is scoped to: {ws}")
+    print(f"# To use another workspace, add another server entry.")
+    print()
+    print(json.dumps(config, indent=2))
+
+
+def cmd_reindex(workspace: str) -> None:
+    ws = Path(workspace).resolve()
+    db_path = ws / ".llmwiki" / "index.db"
+    if not db_path.exists():
+        print(f"No index found. Run: llmwiki init {ws}", file=sys.stderr)
+        sys.exit(1)
+
+    # Drop and recreate document-related tables
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("DELETE FROM document_chunks")
+    conn.execute("DELETE FROM document_pages")
+    conn.execute("DELETE FROM documents")
+    conn.commit()
+
+    # Get workspace info
+    cursor = conn.execute("SELECT id, user_id FROM workspace LIMIT 1")
+    row = cursor.fetchone()
+    if not row:
+        print("No workspace found in index.", file=sys.stderr)
+        sys.exit(1)
+    ws_id, user_id = row
+    conn.close()
+
+    _index_existing_files(ws, db_path, user_id, ws_id)
+    print(f"✓ Reindexed workspace: {ws}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="llmwiki",
+        description="LLM Wiki — local-first knowledge workspace",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    p_open = sub.add_parser("open", help="Init if needed + serve + open browser")
+    p_open.add_argument("workspace", help="Path to workspace folder")
+
+    p_init = sub.add_parser("init", help="Initialize a workspace folder")
+    p_init.add_argument("workspace", help="Path to workspace folder")
+
+    p_serve = sub.add_parser("serve", help="Start API + web servers")
+    p_serve.add_argument("workspace", help="Path to workspace folder")
+
+    p_mcp = sub.add_parser("mcp", help="Run stdio MCP server")
+    p_mcp.add_argument("workspace", help="Path to workspace folder")
+
+    p_config = sub.add_parser("mcp-config", help="Print Claude MCP config snippet")
+    p_config.add_argument("workspace", help="Path to workspace folder")
+    p_config.add_argument("--name", help="Custom server name")
+
+    p_reindex = sub.add_parser("reindex", help="Force full rebuild of index")
+    p_reindex.add_argument("workspace", help="Path to workspace folder")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "open":
+        cmd_open(args.workspace)
+    elif args.command == "init":
+        cmd_init(args.workspace)
+    elif args.command == "serve":
+        cmd_serve(args.workspace)
+    elif args.command == "mcp":
+        cmd_mcp(args.workspace)
+    elif args.command == "mcp-config":
+        cmd_mcp_config(args.workspace, args.name)
+    elif args.command == "reindex":
+        cmd_reindex(args.workspace)
+
+
+if __name__ == "__main__":
+    main()

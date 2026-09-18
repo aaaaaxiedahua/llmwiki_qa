@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# MCP config (contains user IDs)
+.mcp.json
+
+# Build
+.next/
+.wxt/
+.output/
+dist/
+*.egg-info/
+*.tsbuildinfo
+
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# LLM Wiki local workspace artifacts
+.llmwiki/
+/wiki/
+/mcp/wiki/
+/emails/
+
+# Deploy
+deploy.sh
+
+# Local Netlify folder
+.netlify
+nvidia-10k-first20.md
+
+.claude
+.playwright-mcp
+.pytest_cache
+
+CLAUDE.md
+
+# Supabase CLI cache
+supabase/.temp/
+
+# Local-only specs / scratch docs
+docs/
+
+# Local-only developer scripts (apply_migration.sh, one-shot utilities)
+scripts/

@@ -1,0 +1,298 @@
+import { getSupabase } from "@/lib/supabase";
+import { getApiUrl, clearAccountSelections } from "@/lib/settings";
+import { isAllowedApiFetchUrl } from "@/lib/security";
+import {
+  CLOSE_PDF_SAVE_CONTEXT,
+  ENSURE_PDF_SAVE_CONTEXT,
+  GET_PDF_SAVE_STATUS,
+  START_PDF_SAVE,
+  type GetPdfSaveStatusMessage,
+  type StartPdfSaveMessage,
+} from "@/lib/pdf-save-jobs";
+import { API_READ_TIMEOUT_MS, API_WRITE_TIMEOUT_MS, runWithDeadline } from "@/lib/deadline";
+
+type BackgroundMessage =
+  | { type: "SIGN_IN_WITH_GOOGLE" }
+  | { type: "SIGN_IN_WITH_PASSWORD"; email: string; password: string }
+  | { type: "SIGN_OUT" }
+  | { type: "GET_SESSION" }
+  | { type: typeof ENSURE_PDF_SAVE_CONTEXT }
+  | { type: typeof CLOSE_PDF_SAVE_CONTEXT }
+  | {
+      type: "API_FETCH";
+      url: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+      timeoutMs?: number;
+    };
+
+type Message = BackgroundMessage | StartPdfSaveMessage | GetPdfSaveStatusMessage;
+
+interface ApiFetchResponse {
+  ok: boolean;
+  status: number;
+  data?: unknown;
+  error?: string;
+}
+
+export default defineBackground(() => {
+  const supabase = getSupabase();
+
+  chrome.runtime.onMessage.addListener(
+    (message: Message, sender, sendResponse) => {
+      // Only our own contexts (popup, injected content scripts) may drive these
+      // privileged handlers. Without externally_connectable no web page can
+      // reach here, but reject foreign senders as defense in depth.
+      if (sender.id !== chrome.runtime.id) return false;
+      // These messages are owned by the offscreen document. Returning false
+      // lets that context be the sole responder.
+      if (message.type === START_PDF_SAVE || message.type === GET_PDF_SAVE_STATUS) {
+        return false;
+      }
+      handleMessage(message)
+        .then(sendResponse)
+        .catch((err: unknown) => {
+          sendResponse({ error: err instanceof Error ? err.message : "Background error" });
+        });
+      return true; // will respond asynchronously
+    },
+  );
+
+  async function handleMessage(msg: BackgroundMessage) {
+    switch (msg.type) {
+      case "SIGN_IN_WITH_GOOGLE":
+        return signInWithGoogle();
+      case "SIGN_IN_WITH_PASSWORD":
+        return signInWithPassword(msg.email, msg.password);
+      case "SIGN_OUT":
+        return signOut();
+      case "GET_SESSION":
+        return getSession();
+      case ENSURE_PDF_SAVE_CONTEXT:
+        return ensurePdfSaveContext();
+      case CLOSE_PDF_SAVE_CONTEXT:
+        return closePdfSaveContext();
+      case "API_FETCH":
+        return apiFetchProxy(msg);
+      default:
+        return { error: "Unknown message type" };
+    }
+  }
+
+  // ── API fetch proxy ─────────────────────────────────────
+  //
+  // Content scripts in MV3 fetch from the page's origin, which means most
+  // sites (Substack, console.cloud.google.com, NYT, etc.) block our calls
+  // via CORS or strict CSP. The background service worker has the privileged
+  // chrome-extension origin and the required host_permission for the API
+  // origin, so it can make the request and forward the result. The target is
+  // gated to the configured API origin by isAllowedApiFetchUrl.
+
+  async function apiFetchProxy(
+    msg: {
+      url: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+      timeoutMs?: number;
+    },
+  ): Promise<ApiFetchResponse> {
+    try {
+      if (!isAllowedApiFetchUrl(msg.url, await getApiUrl())) {
+        return { ok: false, status: 403, error: "Blocked extension fetch target" };
+      }
+      const requestedTimeout = Number.isFinite(msg.timeoutMs)
+        ? Number(msg.timeoutMs)
+        : API_READ_TIMEOUT_MS;
+      const timeoutMs = Math.min(Math.max(requestedTimeout, 1_000), API_WRITE_TIMEOUT_MS);
+      return await runWithDeadline(async (signal) => {
+        const res = await fetch(msg.url, {
+          method: msg.method ?? "GET",
+          headers: msg.headers,
+          body: msg.body,
+          signal,
+        });
+        let data: unknown = null;
+        const text = await res.text();
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch {
+            data = text;
+          }
+        }
+        return { ok: res.ok, status: res.status, data };
+      }, timeoutMs, `API request timed out after ${Math.ceil(timeoutMs / 1_000)} seconds`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Network error";
+      return { ok: false, status: 0, error: message };
+    }
+  }
+
+  // ── Google OAuth via Supabase as the broker ─────────────
+  //
+  // The extension does NOT talk to Google's token endpoint directly. Reasons:
+  //   - Web app OAuth clients require a client_secret on token exchange.
+  //     Embedding a client_secret in the extension is unsafe.
+  //   - Google rejects launchWebAuthFlow with chromiumapp.org as the direct
+  //     Google redirect URI ("browser may not be secure") on many clients.
+  //
+  // Instead we route through Supabase Auth, which already has the Google
+  // client_secret stored server-side:
+  //   1. Ask Supabase to build a Google OAuth URL with `redirectTo` = our
+  //      chromiumapp.org/auth/callback. `skipBrowserRedirect: true` keeps us
+  //      from auto-redirecting in this context — we just want the URL.
+  //   2. Open Supabase's URL with launchWebAuthFlow. Google sees Supabase's
+  //      callback as the redirect target (a normal https URL, so no
+  //      "browser may not be secure" complaints).
+  //   3. Google → Supabase's hosted callback → Supabase exchanges code →
+  //      Supabase redirects to chromiumapp.org/auth/callback?code=<supabase>
+  //      with its OWN single-use code, not Google's.
+  //   4. We pull `code` and call `supabase.auth.exchangeCodeForSession(code)`
+  //      to materialize a session in chrome.storage.
+  //
+  // Required Supabase Auth Settings → URL Configuration → Redirect URLs:
+  //   https://<extension-id>.chromiumapp.org/auth/callback
+  //
+  // Google Cloud OAuth client just needs Supabase's callback as before:
+  //   https://iaosaklvjwtviaadjbul.supabase.co/auth/v1/callback
+
+  async function signInWithGoogle(): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    try {
+      const redirectTo = chrome.identity.getRedirectURL("auth/callback");
+
+      // Step 1: ask Supabase for the Google OAuth URL.
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo,
+          skipBrowserRedirect: true,
+          scopes: "openid email profile",
+        },
+      });
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      if (!data?.url) {
+        return { success: false, error: "Supabase returned no OAuth URL" };
+      }
+
+      // Step 2-3: open Google's auth via Supabase's URL. Supabase handles the
+      // Google code exchange server-side and redirects to redirectTo with a
+      // Supabase auth code.
+      const callbackUrl = await chrome.identity.launchWebAuthFlow({
+        url: data.url,
+        interactive: true,
+      });
+      if (!callbackUrl) {
+        return { success: false, error: "Auth flow cancelled" };
+      }
+
+      const parsed = new URL(callbackUrl);
+      const oauthError = parsed.searchParams.get("error_description")
+        || parsed.searchParams.get("error");
+      if (oauthError) {
+        return { success: false, error: oauthError };
+      }
+      const code = parsed.searchParams.get("code");
+      if (!code) {
+        return { success: false, error: "No auth code in callback URL" };
+      }
+
+      // Step 4: trade Supabase's code for an actual session.
+      const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+      if (exchangeError) {
+        return { success: false, error: exchangeError.message };
+      }
+      return { success: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Auth failed";
+      return { success: false, error: message };
+    }
+  }
+
+  async function signInWithPassword(
+    email: string,
+    password: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Sign in failed";
+      return { success: false, error: message };
+    }
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    await clearAccountSelections();
+    return { success: true };
+  }
+
+  async function getSession() {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    return {
+      accessToken: session?.access_token ?? null,
+      userId: session?.user?.id ?? null,
+    };
+  }
+
+  let offscreenCreation: Promise<void> | null = null;
+  const offscreenUrl = chrome.runtime.getURL("offscreen.html");
+
+  async function ensurePdfSaveContext(): Promise<{ ready: true }> {
+    if (!(await hasPdfSaveContext())) {
+      offscreenCreation ??= chrome.offscreen.createDocument({
+        url: offscreenUrl,
+        reasons: ["BLOBS" as chrome.offscreen.Reason],
+        justification: "Keep PDF download and upload blobs alive after the popup closes",
+      });
+      try {
+        await offscreenCreation;
+      } finally {
+        offscreenCreation = null;
+      }
+    }
+    return { ready: true };
+  }
+
+  async function closePdfSaveContext(): Promise<{ closed: true }> {
+    if (offscreenCreation) await offscreenCreation;
+    if (await hasPdfSaveContext()) await chrome.offscreen.closeDocument();
+    return { closed: true };
+  }
+
+  async function hasPdfSaveContext(): Promise<boolean> {
+    // runtime.getContexts arrived in Chrome 116. For Chrome 109-115, inspect
+    // the service worker's controlled clients as recommended by Chrome.
+    if ("getContexts" in chrome.runtime) {
+      const contexts = await new Promise<chrome.runtime.ExtensionContext[]>((resolve) => {
+        chrome.runtime.getContexts({
+          contextTypes: ["OFFSCREEN_DOCUMENT" as chrome.runtime.ContextType],
+          documentUrls: [offscreenUrl],
+        }, resolve);
+      });
+      return contexts.length > 0;
+    }
+
+    const workerScope = globalThis as typeof globalThis & {
+      clients: { matchAll(): Promise<ReadonlyArray<{ url: string }>> };
+    };
+    const extensionClients = await workerScope.clients.matchAll();
+    return extensionClients.some((client) => client.url === offscreenUrl);
+  }
+
+});
