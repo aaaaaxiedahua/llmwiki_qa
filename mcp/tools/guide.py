@@ -74,6 +74,9 @@ For every ingested source document, create exactly one summary page at `/wiki/so
 ### Syntheses (`/wiki/syntheses/`) — FILED Q&A ANSWERS
 Answers produced by the built-in chat are filed here automatically as dated pages with `type: synthesis`. You may also file notable query results yourself when an answer is worth keeping. Treat them as first-class pages: link them to related concepts/entities.
 
+### Auto-ingestion (when enabled)
+If the workspace config has `ingestion.enabled: true`, new source documents are automatically distilled into wiki pages by a background two-step LLM pipeline (analyze → generate), including a guaranteed `/wiki/sources/` summary page per source. Pages it writes follow the same conventions below — when you edit or extend them, keep the frontmatter (`type`, `aliases`, `sources`) intact so retrieval keeps working.
+
 ### Directory Index (`_index.md`) — NAVIGATION MAP PER DIRECTORY
 Every directory under `/wiki/` should have an `_index.md` listing each page with a one-line description:
 ```markdown

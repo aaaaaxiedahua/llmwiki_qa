@@ -156,8 +156,8 @@ export function ChatPanel({ kbId }: { kbId: string }) {
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {enabled === false && (
           <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
-            问答未启用。请在 <code>.llmwiki/config.json</code> 中配置
-            <code> llm.base_url / llm.api_key / llm.model</code> 后重启服务。
+            问答未启用。请在 <code>.env</code> 中配置
+            <code> LLM_BASE_URL / LLM_API_KEY / LLM_MODEL</code> 后重启服务。
           </div>
         )}
         {messages.map((m, i) => (

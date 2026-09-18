@@ -12,6 +12,8 @@ export interface UploadItem {
   progress: number
   phase: UploadPhase
   documentNumber: number | null
+  documentId: string | null
+  phaseStartedAt: number
   error: string | null
 }
 
@@ -36,6 +38,7 @@ interface UploadState {
   setProgress: (id: string, progress: number) => void
   markProcessing: (id: string) => void
   markFailed: (id: string, error?: string | null) => void
+  attachDocument: (id: string, documentId: string) => void
   reconcileDocuments: (kbId: string, documents: DocumentListItem[]) => void
   dismiss: (id: string) => void
   clearFinished: () => void
@@ -55,7 +58,15 @@ export const useUploadStore = create<UploadState>((set) => ({
   addUpload: (upload) =>
     set((state) => ({
       items: [
-        { ...upload, progress: 0, phase: 'uploading', documentNumber: null, error: null },
+        {
+          ...upload,
+          progress: 0,
+          phase: 'uploading',
+          documentNumber: null,
+          documentId: null,
+          phaseStartedAt: Date.now(),
+          error: null,
+        },
         ...state.items,
       ],
     })),
@@ -70,14 +81,25 @@ export const useUploadStore = create<UploadState>((set) => ({
   markProcessing: (id) =>
     set((state) => ({
       items: state.items.map((item) =>
-        item.id === id ? { ...item, phase: 'processing', progress: 1 } : item,
+        item.id === id
+          ? { ...item, phase: 'processing', progress: 1, phaseStartedAt: Date.now() }
+          : item,
       ),
     })),
 
   markFailed: (id, error = null) =>
     set((state) => ({
       items: state.items.map((item) =>
-        item.id === id ? { ...item, phase: 'failed', error } : item,
+        item.id === id
+          ? { ...item, phase: 'failed', phaseStartedAt: Date.now(), error }
+          : item,
+      ),
+    })),
+
+  attachDocument: (id, documentId) =>
+    set((state) => ({
+      items: state.items.map((item) =>
+        item.id === id ? { ...item, documentId } : item,
       ),
     })),
 
@@ -91,11 +113,23 @@ export const useUploadStore = create<UploadState>((set) => ({
         const phase: UploadPhase =
           doc.status === 'ready' ? 'ready' : doc.status === 'failed' ? 'failed' : 'processing'
         const error = doc.status === 'failed' ? doc.error_message : item.error
-        if (phase === item.phase && doc.document_number === item.documentNumber && error === item.error) {
+        if (
+          phase === item.phase &&
+          doc.document_number === item.documentNumber &&
+          doc.id === item.documentId &&
+          error === item.error
+        ) {
           return item
         }
         changed = true
-        return { ...item, phase, documentNumber: doc.document_number, error }
+        return {
+          ...item,
+          phase,
+          documentNumber: doc.document_number,
+          documentId: doc.id,
+          error,
+          ...(phase !== item.phase ? { phaseStartedAt: Date.now() } : {}),
+        }
       })
       return changed ? { items } : state
     }),

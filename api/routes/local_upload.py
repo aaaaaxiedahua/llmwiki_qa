@@ -327,6 +327,12 @@ async def upload_file(
 
             asyncio.create_task(process_document_isolated(_workspace_root(), doc_id))
 
+        # mark_written makes the watcher skip this file, so the watcher's
+        # ingestion hook never fires — enqueue here instead.
+        from domain.ingestion import enqueue_document, ingestion_enabled
+        if ingestion_enabled():
+            await enqueue_document(db, doc_id)
+
         if deferred_cancellation is not None:
             raise deferred_cancellation
 

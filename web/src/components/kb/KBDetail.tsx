@@ -142,6 +142,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
   const setUploadProgress = useUploadStore((s) => s.setProgress)
   const markUploadProcessing = useUploadStore((s) => s.markProcessing)
   const markUploadFailed = useUploadStore((s) => s.markFailed)
+  const attachUploadDocument = useUploadStore((s) => s.attachDocument)
   const reconcileUploads = useUploadStore((s) => s.reconcileDocuments)
   const processingUploads = useUploadStore(
     (s) => s.items.filter((i) => i.kbId === kbId && i.phase === 'processing').length,
@@ -683,13 +684,36 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
             const formData = new FormData()
             formData.append('file', file)
             formData.append('path', targetPath)
+            // XHR instead of fetch: upload.onprogress gives real byte-level
+            // progress, which fetch cannot report.
             try {
-              const res = await fetch(`${API_URL}/v1/upload`, { method: 'POST', body: formData })
-              if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
-              const data = await res.json()
+              const data = await new Promise<DocumentListItem>((resolve, reject) => {
+                const xhr = new XMLHttpRequest()
+                xhr.open('POST', `${API_URL}/v1/upload`)
+                xhr.upload.onprogress = (e) => {
+                  if (e.lengthComputable && e.total > 0) setUploadProgress(uploadId, e.loaded / e.total)
+                }
+                xhr.onload = () => {
+                  if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                      resolve(JSON.parse(xhr.responseText) as DocumentListItem)
+                    } catch {
+                      reject(new Error('Invalid server response'))
+                    }
+                  } else {
+                    reject(new Error(`Upload failed (HTTP ${xhr.status})`))
+                  }
+                }
+                xhr.onerror = () => reject(new Error('Network error — is the API server running?'))
+                xhr.ontimeout = () => reject(new Error('Upload timed out'))
+                xhr.send(formData)
+              })
               setDocuments((prev) => [data, ...prev])
+              attachUploadDocument(uploadId, data.id)
               markUploadProcessing(uploadId)
-            } catch { markUploadFailed(uploadId) }
+            } catch (err) {
+              markUploadFailed(uploadId, err instanceof Error ? err.message : 'Upload failed')
+            }
           } else {
             await tusUploadFile(file, targetPath)
           }
@@ -707,7 +731,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
         navigateToView('files')
       }
     })
-  }, [kbId, kbSlug, userId, tusUploadFile, documents, sourceDocs.length, navigateToView, addUpload, markUploadProcessing, markUploadFailed])
+  }, [kbId, kbSlug, userId, tusUploadFile, documents, sourceDocs.length, navigateToView, addUpload, setUploadProgress, markUploadProcessing, markUploadFailed, attachUploadDocument])
 
   React.useEffect(() => {
     reconcileUploads(kbId, documents)

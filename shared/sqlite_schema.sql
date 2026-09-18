@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS documents (
     last_indexed_at TEXT,
     stale_since TEXT,
     highlights TEXT DEFAULT '[]',
+    knowledge_base_id TEXT REFERENCES workspace(id),
+    archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
     UNIQUE(relative_path)
@@ -140,6 +142,23 @@ CREATE INDEX IF NOT EXISTS idx_chunks_annotated
   ON document_chunks(document_id) WHERE has_highlight = 1;
 CREATE INDEX IF NOT EXISTS idx_refs_source ON document_references(source_document_id);
 CREATE INDEX IF NOT EXISTS idx_refs_target ON document_references(target_document_id);
+
+-- Auto-ingestion queue (nashsu-style): new source docs are distilled into
+-- wiki pages by a background two-step LLM pipeline. Persisted so a restart
+-- resumes pending items; worker retries up to INGESTION_MAX_RETRIES.
+CREATE TABLE IF NOT EXISTS ingestion_queue (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'done', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingestion_queue_status ON ingestion_queue(status);
+CREATE INDEX IF NOT EXISTS idx_ingestion_queue_doc ON ingestion_queue(document_id);
 
 CREATE TRIGGER IF NOT EXISTS knowledge_base_activity_insert
 AFTER INSERT ON workspace

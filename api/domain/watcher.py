@@ -71,6 +71,15 @@ def _matches_ignore_pattern(relative: str, patterns: list[str]) -> bool:
 _recently_written: dict[str, float] = {}
 
 
+async def _maybe_enqueue_ingestion(db: aiosqlite.Connection, doc_id: str, source_kind: str) -> None:
+    """Queue newly indexed source docs for auto-ingestion (no-op when disabled)."""
+    if source_kind != "source":
+        return
+    from domain.ingestion import enqueue_document, ingestion_enabled
+    if ingestion_enabled():
+        await enqueue_document(db, doc_id)
+
+
 def mark_written(path: str) -> None:
     """Mark a path as recently written by the app. Watcher will skip it."""
     _recently_written[str(Path(path).resolve())] = time.monotonic()
@@ -215,6 +224,7 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
                 (doc_id,),
             )
             await db.commit()
+        await _maybe_enqueue_ingestion(db, doc_id, source_kind)
         return
 
     # Create new
@@ -249,6 +259,8 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
     if status == "ready" and content is not None:
         from domain.local_processor import chunk_text_document
         await chunk_text_document(db, doc_id, content)
+
+    await _maybe_enqueue_ingestion(db, doc_id, source_kind)
 
 
 async def _remove_file(db: aiosqlite.Connection, workspace: Path, file_path: Path) -> None:

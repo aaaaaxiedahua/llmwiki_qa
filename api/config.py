@@ -47,10 +47,17 @@ class Settings(BaseSettings):
     CONVERTER_URL: str = ""
     CONVERTER_SECRET: str = ""
 
+    # 问答聊天窗（仅 local 模式）：OpenAI 兼容端点，未配置则聊天关闭
+    # 真实 key 请放仓库根目录 .env（已 gitignore）或环境变量，不要写在这里
     # LLM_BASE_URL: str = ""
     # LLM_API_KEY: str = ""
     # LLM_MODEL: str = ""
     # LLM_TIMEOUT: float = 60.0
+
+    # 自动摄入（仅 local 模式）：新源文档自动经两步 LLM 摄入生成 wiki 页面
+    INGESTION_ENABLED: bool = False
+    INGESTION_MAX_RETRIES: int = 3
+    INGESTION_UPDATE_OVERVIEW: bool = True
 
     GLOBAL_OCR_ENABLED: bool = True
     GLOBAL_MAX_PAGES: int = 1_000_000

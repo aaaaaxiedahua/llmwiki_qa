@@ -136,7 +136,7 @@ async def chat_stream(req: ChatRequest, request: Request, user_id: str = Depends
             status_code=503,
             content={
                 "error": "chat_not_configured",
-                "detail": "Set llm.base_url / llm.api_key / llm.model in .llmwiki/config.json",
+                "detail": "Set LLM_BASE_URL / LLM_API_KEY / LLM_MODEL in .env",
             },
         )
 

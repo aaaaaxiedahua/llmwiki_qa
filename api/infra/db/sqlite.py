@@ -106,6 +106,23 @@ async def create_pool(db_path: str, init_schema: bool = True) -> aiosqlite.Conne
         if "kind" not in {row[1] for row in await cur.fetchall()}:
             await db.execute("ALTER TABLE workspace ADD COLUMN kind TEXT NOT NULL DEFAULT 'wiki'")
 
+        # Same for documents.knowledge_base_id / archived — the repo queries
+        # filter on both, but early local schemas shipped without them.
+        cur = await db.execute("PRAGMA table_info(documents)")
+        doc_cols = {row[1] for row in await cur.fetchall()}
+        if "knowledge_base_id" not in doc_cols:
+            await db.execute(
+                "ALTER TABLE documents ADD COLUMN knowledge_base_id TEXT REFERENCES workspace(id)"
+            )
+        if "archived" not in doc_cols:
+            await db.execute(
+                "ALTER TABLE documents ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+            )
+        await db.execute(
+            "UPDATE documents SET knowledge_base_id = (SELECT id FROM workspace LIMIT 1) "
+            "WHERE knowledge_base_id IS NULL"
+        )
+
         # Honest, idempotent activity backfill for pre-existing workspaces.
         # We know creation times, but updated_at also reflects processing and
         # highlight writes, so it must never be treated as historical edits.
@@ -218,11 +235,12 @@ class SQLiteDocumentRepository:
 
         await self._db.execute(
             "INSERT INTO documents (id, user_id, filename, title, path, relative_path, source_kind, "
-            "file_type, file_size, status, content, tags, metadata, version, document_number) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'md', ?, 'ready', ?, ?, ?, 0, ?)",
+            "file_type, file_size, status, content, tags, metadata, version, document_number, "
+            "knowledge_base_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'md', ?, 'ready', ?, ?, ?, 0, ?, ?)",
             (doc_id, user_id, filename, title, path, relative_path, source_kind,
              len(content.encode("utf-8")), content, json.dumps(tags),
-             json.dumps(metadata, ensure_ascii=False) if metadata else None, doc_number),
+             json.dumps(metadata, ensure_ascii=False) if metadata else None, doc_number, kb_id),
         )
         await self._db.commit()
         return await self.get(doc_id)
