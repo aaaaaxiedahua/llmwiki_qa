@@ -15,6 +15,11 @@ function LoginFormInner() {
   const returnTo = searchParams.get('returnTo')
 
   useEffect(() => {
+    // 本地模式无 Supabase，登录页无意义，直接进 wiki
+    if (process.env.NEXT_PUBLIC_MODE === 'local') {
+      router.replace('/wikis')
+      return
+    }
     const supabase = createClient()
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) router.replace('/wikis')

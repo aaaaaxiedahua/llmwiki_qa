@@ -5,6 +5,8 @@ import { withSentryConfig } from "@sentry/nextjs";
 const nextConfig: NextConfig = {
   output: "standalone",
   outputFileTracingRoot: path.join(__dirname),
+  // LAN 演示：`llmwiki open --lan` 注入 ALLOWED_DEV_ORIGINS，放行局域网 dev 资源（HMR/字体）
+  allowedDevOrigins: (process.env.ALLOWED_DEV_ORIGINS ?? "").split(",").filter(Boolean),
   async headers() {
     return [
       {

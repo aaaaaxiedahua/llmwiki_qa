@@ -96,14 +96,14 @@ def is_allowed_local_origin(
     app_origin: str,
     extension_origins: tuple[str, ...] = (),
 ) -> bool:
-    """Allow the configured web UI and explicitly trusted extension IDs."""
+    """Allow the configured web UI and explicitly trusted extension IDs.
+
+    APP_URL 是显式配置：配成回环地址行为与之前一致；配成局域网地址视为
+    用户有意做 LAN 演示，放行对应 origin 的写操作。
+    """
     origin_key = _http_origin_key(origin)
     app_origin_key = _http_origin_key(app_origin)
-    if (
-        origin_key is not None
-        and origin_key == app_origin_key
-        and app_origin_key[1] in LOOPBACK_HOSTS
-    ):
+    if origin_key is not None and origin_key == app_origin_key:
         return True
     return origin in normalize_extension_origins(extension_origins)
 
@@ -120,6 +120,11 @@ class LocalHTTPBoundaryMiddleware:
         self.app = app
         self.app_origin = app_origin
         self.extension_origins = extension_origins
+        # APP_URL 配成非回环地址（如局域网 IP）时，把该主机名并入 Host 白名单
+        app_origin_key = _http_origin_key(app_origin)
+        self.allowed_hosts = frozenset(
+            LOOPBACK_HOSTS | ({app_origin_key[1]} if app_origin_key else set())
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -131,7 +136,7 @@ class LocalHTTPBoundaryMiddleware:
             for name, value in scope.get("headers", [])
             if name.lower() == b"host"
         ]
-        if len(host_values) != 1 or _host_name(host_values[0]) not in LOOPBACK_HOSTS:
+        if len(host_values) != 1 or _host_name(host_values[0]) not in self.allowed_hosts:
             response = PlainTextResponse("Invalid Host header", status_code=400)
             await response(scope, receive, send)
             return
