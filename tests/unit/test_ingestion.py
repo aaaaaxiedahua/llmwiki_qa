@@ -36,13 +36,16 @@ async def db(tmp_path, monkeypatch):
     await conn.close()
 
 
-async def _doc(db, filename, source_kind="source", status="ready", content="正文内容" * 50):
+async def _doc(db, filename, source_kind="source", status="ready", content="正文内容" * 50,
+               file_type="md", error_message=None):
     doc_id = str(uuid.uuid4())
     await db.execute(
         "INSERT INTO documents (id, user_id, filename, title, path, relative_path, "
-        "source_kind, file_type, status, content, tags, version, document_number) "
-        "VALUES (?, 'u1', ?, ?, '/', ?, ?, 'md', ?, ?, '[]', 0, 1)",
-        (doc_id, filename, filename, filename, source_kind, status, content),
+        "source_kind, file_type, status, content, tags, version, document_number, "
+        "error_message) "
+        "VALUES (?, 'u1', ?, ?, '/', ?, ?, ?, ?, ?, '[]', 0, 1, ?)",
+        (doc_id, filename, filename, filename, source_kind, file_type, status, content,
+         error_message),
     )
     await db.commit()
     return doc_id
@@ -187,3 +190,22 @@ async def test_process_one_skips_unready_docs(db, tmp_path, monkeypatch):
         "SELECT status FROM ingestion_queue WHERE document_id = ?", (doc_id,)
     )
     assert (await cur.fetchone())[0] == "pending"  # waits for conversion
+
+
+async def test_enqueue_skips_images(db):
+    doc_id = await _doc(db, "photo.png", file_type="png", content=None)
+    assert await enqueue_document(db, doc_id) is False
+
+
+async def test_process_one_reaps_queue_rows_for_failed_documents(db, tmp_path, monkeypatch):
+    doc_id = await _doc(db, "corrupt.docx", file_type="docx", status="failed",
+                        content=None, error_message="bad zip")
+    await db.execute("INSERT INTO ingestion_queue (document_id) VALUES (?)", (doc_id,))
+    await db.commit()
+    _mock_llm(monkeypatch)
+
+    assert await process_one(db, tmp_path, FakeFactory(FakeDocService()), USER_ID) is False
+    cur = await db.execute(
+        "SELECT status, error FROM ingestion_queue WHERE document_id = ?", (doc_id,)
+    )
+    assert tuple(await cur.fetchone()) == ("failed", "bad zip")

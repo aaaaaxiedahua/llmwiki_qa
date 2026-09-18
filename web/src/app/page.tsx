@@ -380,12 +380,7 @@ export default function LandingPage() {
       {/* Footer */}
       <footer className="border-t border-border px-6 lg:px-10 py-6 flex items-center justify-between text-xs text-muted-foreground/50">
         <span>LLM Wiki</span>
-        <div className="flex items-center gap-4">
-          <Link href="/terms" className="hover:text-muted-foreground transition-colors">Terms</Link>
-          <Link href="/privacy" className="hover:text-muted-foreground transition-colors">Privacy</Link>
-          <Link href="/dmca" className="hover:text-muted-foreground transition-colors">DMCA</Link>
-          <span>Free &amp; open source &middot; Apache 2.0</span>
-        </div>
+        <span>Free &amp; open source &middot; Apache 2.0</span>
       </footer>
     </div>
   )

@@ -21,12 +21,15 @@ from pathlib import Path
 
 import aiosqlite
 from config import settings
+from domain.file_types import IMAGE_TYPES
 from services import llm_gateway
 
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 2.0
 MAX_SOURCE_CHARS = 24000  # truncation guard for the analyze prompt
+
+_SKIP_FILE_TYPES = IMAGE_TYPES  # no text content to distill
 
 ANALYZE_PROMPT = """你是知识库的摄入分析器。阅读下面的源文档和现有 wiki 页面清单，输出结构化分析。
 
@@ -71,12 +74,13 @@ def ingestion_enabled() -> bool:
 
 
 async def enqueue_document(db: aiosqlite.Connection, doc_id: str) -> bool:
-    """Queue a source document for ingestion. Wiki pages are never enqueued."""
+    """Queue a source document for ingestion. Wiki pages and textless
+    file types (images) are never enqueued."""
     cursor = await db.execute(
-        "SELECT source_kind FROM documents WHERE id = ?", (doc_id,)
+        "SELECT source_kind, file_type FROM documents WHERE id = ?", (doc_id,)
     )
     row = await cursor.fetchone()
-    if not row or row[0] != "source":
+    if not row or row[0] != "source" or row[1] in _SKIP_FILE_TYPES:
         return False
     cursor = await db.execute(
         "SELECT 1 FROM ingestion_queue WHERE document_id = ? "
@@ -144,6 +148,17 @@ async def _write_page(svc, kb_id: str, path: str, filename: str, content: str) -
 
 async def process_one(db, workspace: Path, factory, user_id: str) -> bool:
     """Claim and process one pending queue item. Returns True if one ran."""
+    # Reap queue rows whose document failed extraction — they can never
+    # become ready, so without this they'd sit in pending forever.
+    await db.execute(
+        "UPDATE ingestion_queue SET status = 'failed', "
+        "error = COALESCE((SELECT error_message FROM documents "
+        "  WHERE id = document_id), 'document processing failed'), "
+        "finished_at = datetime('now') "
+        "WHERE status = 'pending' AND document_id IN "
+        "(SELECT id FROM documents WHERE status = 'failed')"
+    )
+    await db.commit()
     cursor = await db.execute(
         "UPDATE ingestion_queue SET status = 'processing', attempts = attempts + 1 "
         "WHERE id = ("

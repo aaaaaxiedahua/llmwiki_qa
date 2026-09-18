@@ -1,15 +1,21 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-
 from auth import get_current_user
+from config import settings
 from deps import get_document_service
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from infra.rate_limit import limiter
 from services.base import DocumentService
 from services.types import (
-    BulkDelete, CreateFromUrl, CreateNote, CreateWebClip,
-    ReplaceHighlights, UpdateContent, UpdateMetadata, UpsertHighlight,
+    BulkDelete,
+    CreateFromUrl,
+    CreateNote,
+    CreateWebClip,
+    ReplaceHighlights,
+    UpdateContent,
+    UpdateMetadata,
+    UpsertHighlight,
 )
 from services.url_ingest import UrlIngestService
 
@@ -62,11 +68,21 @@ async def get_document_content(doc_id: UUID, service: Annotated[DocumentService,
 
 @router.post("/v1/knowledge-bases/{kb_id}/documents/note", status_code=201)
 async def create_note(
+    request: Request,
     kb_id: UUID,
     body: CreateNote,
     service: Annotated[DocumentService, Depends(get_document_service)],
 ):
-    return await service.create_note(str(kb_id), body.filename, body.path, body.content)
+    doc = await service.create_note(str(kb_id), body.filename, body.path, body.content)
+    # Local auto-ingestion: notes outside /wiki/ are sources. create_note calls
+    # mark_written, so the watcher's ingestion hook never fires — enqueue here.
+    if settings.MODE == "local":
+        from domain.ingestion import enqueue_document, ingestion_enabled
+
+        db = getattr(request.app.state, "sqlite_db", None)
+        if db is not None and ingestion_enabled():
+            await enqueue_document(db, doc["id"])
+    return doc
 
 
 @router.post("/v1/knowledge-bases/{kb_id}/documents/web", status_code=201)
@@ -78,9 +94,17 @@ async def create_web_clip(
     service: Annotated[DocumentService, Depends(get_document_service)],
 ):
     highlights = [h.model_dump() for h in body.highlights] if body.highlights else None
-    return await service.create_web_clip(
+    doc = await service.create_web_clip(
         str(kb_id), body.url, body.title, body.html, highlights, body.path,
     )
+    # Same mark_written bypass as create_note — enqueue web clips directly.
+    if settings.MODE == "local":
+        from domain.ingestion import enqueue_document, ingestion_enabled
+
+        db = getattr(request.app.state, "sqlite_db", None)
+        if db is not None and ingestion_enabled():
+            await enqueue_document(db, doc["id"])
+    return doc
 
 
 @router.post("/v1/documents/from-url", status_code=201)
