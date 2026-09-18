@@ -1,194 +1,133 @@
 # LLM Wiki
 
-**An autonomous, self-maintaining personal Wikipedia built and maintained by AI.**
+**AI 自动维护的个人知识库 —— 丢进文档，wiki 自己长出来。**
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-green)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-</div>
+把散落的 PDF、Word、笔记丢进一个文件夹，LLM Wiki 会自动把它们蒸馏成一座互相链接的 Markdown 维基：概念页、实体页、来源摘要页，外加自动维护的总览页。之后你可以直接在网页里向自己的知识库提问，也可以让 Claude 通过 MCP 读写这座 wiki。
 
-LLM Wiki transforms your scattered reading and research into a persistent, AI-maintained second brain. Capture documents, notes, and web clippings as you work, and deploy a nightly Claude Routine to autonomously synthesize those sources into a permanent knowledge base. Because the clipper captures your highlights and margin notes alongside the source, the wiki becomes a record of not just what you read but what you *thought* about it — one that compounds over months and years, long after the original context would have faded. This architecture is heavily inspired by [Andrej Karpathy's LLM Wiki concept](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), with an increased emphasis on autonomous maintenance.
+灵感来自 [Andrej Karpathy 的 LLM Wiki 构想](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)，本项目在 [lucasastorian/llmwiki](https://github.com/lucasastorian/llmwiki) 基础上二次开发，改为**完全本地运行 + 上传即自动构建**，不依赖任何云端服务。
 
 <p align="center">
-  <img src="wiki-page.png" alt="LLM Wiki — a compiled wiki page with citations and table of contents" width="820" />
+  <img src="wiki-page.png" alt="LLM Wiki 生成的 wiki 页面" width="820" />
 </p>
 
+## 特性
 
-LLM Wiki is designed to work at three distinct scales:
+- **上传即自动构建** —— 新文档进入工作区后，后台队列自动执行两步 LLM 流水线（分析 → 生成），产出 wiki 页面并更新总览，无需任何对话干预
+- **知识库问答** —— 网页内聊天面板，基于检索到的文档内容回答，支持 OpenAI 兼容和 Anthropic 两种 API 协议
+- **本地优先** —— 文件就是真相：wiki 是普通的 Markdown 文件，索引是可重建的 SQLite；API 只监听 127.0.0.1，你的文档不出本机
+- **MCP 工具** —— Claude（Desktop / Code / 任何 MCP 客户端）可以搜索、阅读、编辑你的 wiki
+- **文件监视** —— 直接把文件拖进文件夹也会自动索引、自动摄入；在编辑器里手改 wiki 页也会同步
+- **进度可见** —— 上传进度、解析状态、wiki 生成状态实时展示，失败会告诉你具体原因
 
-- **For you** — a personal Wikipedia of what you've read that you don't have to remember to update.
-- **For your AI** — a context layer for LLMs to apply your own mental models when working with you.
-- **For your organization** — most organizations have poor institutional memory, because know-how generally lives in people's heads. We hope companies will consider adopting this model to build a self-maintaining institutional knowledge layer.
+## 快速开始
 
-# Features
+**环境要求：** Python 3.11+，Node.js 20+。可选：安装 [LibreOffice](https://www.libreoffice.org/) 用于解析 Word / PowerPoint 文件。
 
-- **Connect via MCP** Connect Claude.ai, Claude Cowork, Claude Code, or Codex (or any other MCP-compatible app)
-- **A Chrome extension** Clip webpages and PDFs as you read, highlight key sections, and leave comments that Claude can see over MCP.
-- **Uploads** Markdown, PowerPoint, PDFs, Word documents, and more.
-- **A clean Next.js web app** to navigate your own wikipedia — and view the underlying sources.
-- **Native cross-linking** between wiki pages, and back to the sources they came from.
-- **A graph viewer** to see how your concepts and entities relate.
-- **Visualizations** — Charts and other visualizations, including SVGs and Mermaid diagrams.
-
-# Getting started
-
-LLM Wiki supports two modes: remote & local. You can self-host the remote app, or try it out for free at llmwiki.app. Or you can git clone the repository, and use the CLI to get started.
-
-Here's how to get started locally.
-
-**Requirements:** Python 3.11+, Node.js 20+. Optional: [LibreOffice](https://www.libreoffice.org/) to extract Word/PowerPoint files, and a `MISTRAL_API_KEY` for higher-quality PDF OCR.
-
-**1. Install.** Clone the repo and install the Python and web dependencies.
-
-macOS / Linux:
+**1. 安装依赖**
 
 ```bash
-git clone https://github.com/lucasastorian/llmwiki.git
+git clone <你的仓库地址>
 cd llmwiki
 python -m venv .venv && source .venv/bin/activate
 pip install -r api/requirements.txt -r mcp/requirements.txt
 cd web && npm install && cd ..
 ```
 
-Windows (PowerShell):
+**2. 配置 LLM**
 
-```powershell
-git clone https://github.com/lucasastorian/llmwiki.git
-cd llmwiki
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r api/requirements.txt -r mcp/requirements.txt
-cd web; npm install; cd ..
-```
-
-If activation is blocked by your execution policy, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or skip activation and use `.venv\Scripts\python` in place of `python` below.
-
-**2. Point it at a folder of your files** — PDFs, Word documents, PowerPoints, Markdown, notes. Use any folder on your disk (it does **not** go inside this repo): the one that already holds your documents, or a fresh empty one. LLM Wiki indexes it into a local search index so the files show up in the app and Claude can read them. It never moves, modifies, or uploads your files — the only things it adds are a `wiki/` folder for generated pages and a hidden `.llmwiki/` index (see [What happens on disk](#what-happens-on-disk)).
+复制 `.env.example` 为 `.env`，填入你的模型服务（任选兼容 OpenAI 或 Anthropic 协议的端点）：
 
 ```bash
-./llmwiki open ~/research                     # macOS / Linux
-python llmwiki open C:\Users\you\research     # Windows
+LLM_BASE_URL=https://api.moonshot.cn/v1
+LLM_API_KEY=sk-...
+LLM_MODEL=kimi-k2
+LLM_PROTOCOL=openai        # 或 anthropic
+INGESTION_ENABLED=true     # 打开自动摄入
 ```
 
-This initializes the workspace, indexes the folder, starts the API and web app, and opens [localhost:3000](http://localhost:3000).
-Local mode is intentionally loopback-only: the API listens on `127.0.0.1` and does not support LAN or remote binding.
+不配 LLM 也能用 —— 索引、搜索、浏览都正常，只是没有自动构建和问答。
 
-To preview the hosted onboarding UX locally without authentication or API writes, start the web app with the development-only preview flag and open [localhost:3000/onboarding](http://localhost:3000/onboarding):
+**3. 指向你的文档文件夹**
 
 ```bash
-cd web
-NEXT_PUBLIC_ONBOARDING_PREVIEW=true npm run dev
+./llmwiki open ~/research
 ```
 
-Restart the development server after changing this flag. The preview simulates creation and completion in memory; it does not create a wiki or change onboarding state.
+这会初始化工作区、建立索引，并启动 API（127.0.0.1:8000）和网页（localhost:3000）。文件夹可以是已有的资料目录 —— 它**不会移动或修改你的文件**，只会新增 `wiki/`（生成的页面）和 `.llmwiki/`（索引缓存，删了可以重建）。
 
-**3. Connect Claude over MCP.** MCP enables Claude to read, write, and search your wiki.
+**4.（可选）接入 Claude**
 
 ```bash
-./llmwiki mcp-config ~/research                     # macOS / Linux
-python llmwiki mcp-config C:\Users\you\research     # Windows
+./llmwiki mcp ~/research
 ```
 
-Paste the printed JSON into `claude_desktop_config.json` (Claude Desktop) or `.claude/settings.json` (Claude Code). One workspace is one MCP server entry, so add one per folder. Then tell Claude: *"Read the guide, then ingest my sources and start building the wiki."*
+把输出的 JSON 配进 Claude Desktop / Claude Code，Claude 就能直接搜索和编辑你的 wiki。
 
-**4. Make it self-maintaining.** Set up a Claude Routine — a scheduled prompt that runs on its own — so Claude refreshes the wiki without you having to remember to. Each run, it reads whatever's new in the workspace since last time (uploads, notes, and clips and highlights from the Chrome extension) and updates the pages those sources touch. You curate the sources; the wiki keeps itself current.
+## 使用方式
 
-A routine prompt that works well:
+**上传文档**：网页里拖文件上传，或直接把文件丢进工作区文件夹。右下角面板会显示完整进度：上传中 → 解析中 → 生成 wiki 中 → 完成，失败会标明原因。
 
-> *Read the guide. Find everything added to the workspace since your last run — new sources, clips, and highlights. For each one, read it and update the wiki: write new pages where they're warranted, fold new material into existing pages, and fix any cross-references or citations it affects.*
+**问答**：打开 wiki 页面右下角的聊天面板，直接对知识库提问，回答会引用来源文档。
 
-Then schedule that prompt to run nightly. [Claude Code Routines](https://code.claude.com/docs/en/routines) run it on Anthropic's cloud on a fixed cadence even when your laptop is closed — create one at [claude.ai/code/routines](https://claude.ai/code/routines), with `/schedule` in the CLI, or from Claude Cowork — while a [Desktop scheduled task](https://code.claude.com/docs/en/desktop-scheduled-tasks) runs the same prompt on your own machine. Either way the wiki compounds: a year from now you can open it and read back the ideas you were working through a year ago.
+**支持的格式**：
 
-# Adding content
+| 类型 | 格式 | 处理方式 |
+|------|------|----------|
+| PDF | `.pdf` | 本地提取文本和图表 |
+| Office | `.docx` `.doc` `.pptx` `.ppt` | 经 LibreOffice 转换后提取（需安装） |
+| 表格 | `.xlsx` `.xls` | 逐 sheet 提取 |
+| 网页 | `.html` `.htm` | 清洗为可读 Markdown |
+| 文本数据 | `.md` `.txt` `.csv` `.json` `.xml` `.yaml` 等 | 直接索引 |
+| 图片 | `.png` `.jpg` `.webp` `.gif` | 存储并可在页面中查看 |
 
-There are two ways to get material into your wiki.
-
-**Upload.** Drag files into the web app, or just drop them into the workspace folder — the background watcher picks them up and indexes them. Markdown, PDF, Word, PowerPoint, Excel, images, and more. Each file becomes searchable and readable by Claude.
-
-**Chrome extension.** Clip web pages and PDFs as you read, highlight the parts that matter, and leave comments. Everything you save lands in the same workspace, and your highlights and notes are visible to Claude over MCP — so a nightly routine can fold them into the wiki on its own.
-
-[Install from the Chrome Web Store →](https://chromewebstore.google.com/detail/llm-wiki/dibilaenlekndomfbampadehjeahemha)
-
-The extension works in both modes. By default it talks to the hosted app; flip the toggle to **Local** and it points at your running workspace at `http://localhost:8000` — so anything you clip while `./llmwiki open` is running goes straight into your local wiki. Pick a destination folder (default `/webclipper/`) and start saving.
-
-# Supported files
-
-| Type | Formats | How it's handled |
-|------|---------|------------------|
-| PDF | `.pdf` | Text and figures extracted locally. Set `MISTRAL_API_KEY` for higher-quality OCR on tables and complex layouts. |
-| Office | `.docx` `.doc` `.pptx` `.ppt` | Converted with LibreOffice, then extracted — requires a local LibreOffice install. |
-| Spreadsheets | `.xlsx` `.xls` | Extracted sheet by sheet. |
-| Web pages | `.html` `.htm` | Cleaned to readable Markdown, stripping nav and ads. |
-| Text & data | `.md` `.txt` `.csv` `.json` `.xml` `.yaml` `.svg`, and more | Indexed and chunked directly. |
-| Images | `.png` `.jpg` `.webp` `.gif` | Stored and viewable inline; Claude can read them when asked. |
-
-# What happens on disk
-
-LLM Wiki adds exactly two things to the folder you point it at. Your source files are never moved, modified, or uploaded — they stay exactly where they are.
+## 目录结构
 
 ```
-~/research/                  # your files, untouched
+~/research/                  # 你的文件，原封不动
   papers/paper.pdf
   notes.md
-  data.xlsx
-  wiki/                      # generated pages — created by LLM Wiki
-    overview.md
-    concepts/
-      attention.md
-  .llmwiki/                  # index + cache — hidden, rebuildable
+  wiki/                      # LLM Wiki 生成的页面
+    overview.md              # 自动维护的总览
+    sources/                 # 每篇文档的摘要页
+    concepts/                # 概念页
+    entities/                # 实体页
+  .llmwiki/                  # 索引 + 缓存（隐藏，可安全删除）
     index.db
     cache/
 ```
 
-- **`wiki/`** holds ordinary Markdown files. Claude writes and updates them over MCP, but they're just files — open them in any editor, commit them to git, edit them by hand.
-- **`.llmwiki/`** is a derived layer: a local SQLite search index (`index.db`) and extracted artifacts (`cache/`). It's safe to delete — `./llmwiki reindex ~/research` rebuilds it from your source files.
+`wiki/` 就是普通 Markdown —— 可以用任何编辑器打开、可以提交到 git、可以手写修改，文件监视器会自动同步索引。
 
-The filesystem is the source of truth; the index just makes it fast to search. A background watcher notices changes you make outside the app and re-indexes them, so editing a wiki page in your own editor stays in sync.
-
-# What Claude can do
-
-Once connected over MCP, Claude works the wiki through a small, deliberate set of tools — the same set in local and hosted mode:
-
-| Tool | What it does |
-|------|--------------|
-| `guide` | Orients Claude — how the vault works and which knowledge bases exist. It calls this first. |
-| `create_knowledge_base` | Creates a knowledge base and starter `overview.md`; local mode returns the existing singleton workspace. |
-| `list_knowledge_bases` | Lists your knowledge bases and their slugs (every other tool takes one). |
-| `search` | Browse files, full-text search across content, or query the citation graph — what cites what, plus stale or uncited pages. |
-| `read` | Read documents — a single file or a glob batch, PDF/office page ranges, optionally with embedded images. |
-| `create` | Create a wiki page, note, or asset (SVG diagram, CSV) with footnote citations back to sources. |
-| `edit` | Find-and-replace exact text in an existing page. |
-| `append` | Add content to the end of a page. |
-| `delete` | Remove pages or sources by path or glob (`overview.md` and any legacy `log.md` are protected). |
-| `lint` | Deterministic hygiene checks — citation resolution, dangling links, orphan and stale pages, frontmatter consistency. |
-
-Writes go to the source of truth first — a file on disk in local mode, Postgres in hosted mode — then the search index updates. So when Claude creates `/wiki/concepts/attention.md`, it's a real file (or row) immediately, not a pending change.
-
-# Architecture
-
-Three kinds of client reach the workspace, through two entry services, over one storage abstraction:
+## 架构
 
 ```
-  Claude  ──MCP──►  MCP server ─┐
-                                │                local mode  →  SQLite + your filesystem
-  Web app ──HTTP─►  API ────────┼──►  VaultFS  ─┤
-                                │                hosted mode →  Postgres + S3
-  Chrome  ──HTTP─►  API ────────┘
-                      └──►  Converter  (PDF / Office text extraction)
+ Claude ──MCP──► mcp/  ──┐
+                         ├──► VaultFS ──► SQLite + 文件系统（本地单用户）
+ 网页 ──HTTP──► api/  ──┘        │
+                                 ├──► 文件监视器（自动索引）
+                                 └──► 摄入队列（两步 LLM 自动构建 wiki）
 ```
 
-`VaultFS` is the seam: the same wiki operations run against a SQLite-plus-filesystem backend locally or a Postgres-plus-S3 backend when hosted, so Claude's tools behave identically either way. The MCP server speaks to Claude; the API serves the web app and the Chrome extension; the converter handles heavier PDF and Office extraction. Whatever the backend, the durable store is the source of truth and the search index is derived from it.
+所有写入先落到文件系统（真相之源），搜索索引是派生状态。摄入队列持久化在 SQLite 里，重启自动续跑，失败自动重试。
 
-# What's next
+## 开发
 
-Today you add content two ways: upload, or the Chrome extension. The wiki is only as good as what reaches it, so the roadmap is mostly about widening that funnel — more channels for capturing what you read, write, and discuss:
+```bash
+# 后端测试
+PYTHONPATH=api pytest tests/unit/ -v
 
-- **Slack** — save messages and threads, and ask the wiki questions, without leaving Slack. This is the natural channel for the institutional-memory case: most of what an organization knows is already flowing through chat.
-- **Granola** — pull in your meeting notes automatically, so the conversations you have become part of your memory alongside the things you read.
-- **Email / forward-to-save** — a dedicated address you forward articles, newsletters, and notes to; they land in the workspace and the nightly routine folds them in.
-- **Public ingest API + webhooks** — a documented endpoint so scripts and other tools can push content into a workspace programmatically, plus a **Zapier** integration to wire up the apps you already use without writing code.
+# MCP 测试
+cd mcp && pytest ../tests/unit/mcp/ -v
 
-The throughline: capture should meet you wherever you already read and think, and the wiki keeps itself current from there.
+# 前端
+cd web && npm run check && npm test
 
-# License
+# Lint
+ruff check .
+```
 
-Apache 2.0 — see [LICENSE](LICENSE).
+## License
+
+Apache 2.0 — 见 [LICENSE](LICENSE)。
