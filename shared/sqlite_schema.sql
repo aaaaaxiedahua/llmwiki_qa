@@ -104,11 +104,12 @@ CREATE TABLE IF NOT EXISTS document_references (
 );
 
 -- FTS5 full-text search (replaces pgroonga)
+-- trigram: substring matching so CJK queries work without a word segmenter.
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     content,
     content='document_chunks',
     content_rowid='rowid',
-    tokenize='porter unicode61'
+    tokenize='trigram'
 );
 
 -- Keep FTS in sync with document_chunks

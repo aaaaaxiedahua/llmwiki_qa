@@ -262,6 +262,10 @@ class LocalDocumentService(DocumentService):
         meta = await asyncio.to_thread(parse_frontmatter, content)
         title = meta.get("title", "").strip() or title_from_filename(filename)
         tags = extract_tags(meta)
+        # description/aliases feed QA retrieval (title+metadata matching leg)
+        doc_meta = {
+            k: meta[k] for k in ("description", "aliases") if meta.get(k)
+        } or None
 
         existing = await self.doc_repo.find_by_path(kb_id, self.user_id, filename, path)
         if existing:
@@ -272,7 +276,7 @@ class LocalDocumentService(DocumentService):
         mark_written(str(file_path))
         await asyncio.to_thread(_write_text_file, file_path, content or "")
 
-        row = await self.doc_repo.create_note(kb_id, self.user_id, filename, path, title, content, tags)
+        row = await self.doc_repo.create_note(kb_id, self.user_id, filename, path, title, content, tags, metadata=doc_meta)
 
         if content:
             chunks = await asyncio.to_thread(chunk_text, content)

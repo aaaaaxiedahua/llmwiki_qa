@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     CONVERTER_URL: str = ""
     CONVERTER_SECRET: str = ""
 
+    # LLM_BASE_URL: str = ""
+    # LLM_API_KEY: str = ""
+    # LLM_MODEL: str = ""
+    # LLM_TIMEOUT: float = 60.0
+
     GLOBAL_OCR_ENABLED: bool = True
     GLOBAL_MAX_PAGES: int = 1_000_000
     GLOBAL_MAX_USERS: int = 10_000

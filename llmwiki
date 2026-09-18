@@ -192,6 +192,32 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
         print(f"✓ Indexed {indexed} existing file(s)")
 
 
+def _load_workspace_config(ws: Path, env: dict) -> None:
+    """Read .llmwiki/config.json and inject LLM settings as env vars.
+
+    Shell env takes precedence over the file, so `LLM_MODEL=x llmwiki open`
+    overrides the config for that run.
+    """
+    cfg_path = ws / ".llmwiki" / "config.json"
+    if not cfg_path.exists():
+        return
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Warning: could not parse {cfg_path}: {e}", file=sys.stderr)
+        return
+    llm = cfg.get("llm", {})
+    mapping = {
+        "base_url": "LLM_BASE_URL",
+        "api_key": "LLM_API_KEY",
+        "model": "LLM_MODEL",
+        "timeout": "LLM_TIMEOUT",
+    }
+    for key, env_name in mapping.items():
+        if llm.get(key) and env_name not in env:
+            env[env_name] = str(llm[key])
+
+
 def cmd_serve(workspace: str, open_browser: bool = True, lan: bool = False) -> None:
     ws = Path(workspace).resolve()
     if not (ws / ".llmwiki" / "index.db").exists():
@@ -214,6 +240,11 @@ def cmd_serve(workspace: str, open_browser: bool = True, lan: bool = False) -> N
     env["DATABASE_URL"] = ""
     env["APP_URL"] = app_url
     env["API_URL"] = api_url
+    _load_workspace_config(ws, env)
+    if env.get("LLM_API_KEY"):
+        print(f"  Chat: enabled ({env.get('LLM_MODEL', 'unknown model')})")
+    else:
+        print("  Chat: disabled (set llm.api_key in .llmwiki/config.json to enable)")
 
     print(f"Starting LLM Wiki for: {ws}")
     print(f"  API: {api_url}")
@@ -346,6 +377,10 @@ def cmd_reindex(workspace: str) -> None:
     conn.execute("DELETE FROM document_chunks")
     conn.execute("DELETE FROM document_pages")
     conn.execute("DELETE FROM documents")
+    # Recreate chunks_fts so tokenizer changes in sqlite_schema.sql apply to
+    # existing workspaces (CREATE IF NOT EXISTS alone never alters it).
+    conn.execute("DROP TABLE IF EXISTS chunks_fts")
+    conn.executescript((REPO_ROOT / "shared" / "sqlite_schema.sql").read_text(encoding="utf-8"))
     conn.commit()
 
     # Get workspace info

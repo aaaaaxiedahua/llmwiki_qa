@@ -204,6 +204,7 @@ class SQLiteDocumentRepository:
     async def create_note(
         self, kb_id: str, user_id: str, filename: str, path: str,
         title: str, content: str, tags: list[str],
+        metadata: dict | None = None,
     ) -> dict:
         doc_id = str(uuid.uuid4())
         relative_path = (path.rstrip("/") + "/" + filename).lstrip("/")
@@ -217,10 +218,11 @@ class SQLiteDocumentRepository:
 
         await self._db.execute(
             "INSERT INTO documents (id, user_id, filename, title, path, relative_path, source_kind, "
-            "file_type, file_size, status, content, tags, version, document_number) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'md', ?, 'ready', ?, ?, 0, ?)",
+            "file_type, file_size, status, content, tags, metadata, version, document_number) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'md', ?, 'ready', ?, ?, ?, 0, ?)",
             (doc_id, user_id, filename, title, path, relative_path, source_kind,
-             len(content.encode("utf-8")), content, json.dumps(tags), doc_number),
+             len(content.encode("utf-8")), content, json.dumps(tags),
+             json.dumps(metadata, ensure_ascii=False) if metadata else None, doc_number),
         )
         await self._db.commit()
         return await self.get(doc_id)

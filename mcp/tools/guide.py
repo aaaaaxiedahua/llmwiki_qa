@@ -65,6 +65,22 @@ You can create pages outside of concepts/ and entities/ when needed:
 
 But concepts/ and entities/ are the primary categories. When in doubt, file there.
 
+### Sources (`/wiki/sources/`) — ONE SUMMARY PAGE PER SOURCE
+For every ingested source document, create exactly one summary page at `/wiki/sources/<source-name>.md`. This is the retrieval middle layer between polished concept pages and raw chunks.
+- Frontmatter `sources: [文件名.pdf]` linking back to the raw source
+- Content: what the document is, its key claims with page citations, which concepts/entities it feeds
+- Always create it, even for thin sources — never skip.
+
+### Syntheses (`/wiki/syntheses/`) — FILED Q&A ANSWERS
+Answers produced by the built-in chat are filed here automatically as dated pages with `type: synthesis`. You may also file notable query results yourself when an answer is worth keeping. Treat them as first-class pages: link them to related concepts/entities.
+
+### Directory Index (`_index.md`) — NAVIGATION MAP PER DIRECTORY
+Every directory under `/wiki/` should have an `_index.md` listing each page with a one-line description:
+```markdown
+- [半监督学习](半监督学习.md) — 用少量标注+大量无标注数据训练
+```
+Update it whenever you add or remove a page. The QA system uses it as a map of what the wiki contains.
+
 ## Page Hierarchy
 
 Wiki pages use a parent/child hierarchy via paths:
@@ -87,6 +103,7 @@ title: KV Cache Efficiency
 description: Memory optimization strategies for transformer inference at scale
 date: 2025-03-15
 tags: [inference, memory, optimization, transformers]
+aliases: [KV cache, KV缓存, key-value cache]
 ---
 ```
 
@@ -95,6 +112,7 @@ Fields:
 - `description` — one-sentence summary of what this page covers (required). Keep it concrete and specific — this shows up in graph tooltips and search results.
 - `date` — when the page was created or last substantially revised, YYYY-MM-DD (required)
 - `tags` — list of relevant topic tags for filtering and discovery (required, at least 2)
+- `aliases` — alternative names: abbreviations, Chinese/English variants, common phrasings (required for pages whose topic has any). This is how the QA retrieval finds pages when users ask with different wording than the title.
 
 When updating a page, update `date` if the revision is substantial. Always preserve existing frontmatter fields when editing.
 

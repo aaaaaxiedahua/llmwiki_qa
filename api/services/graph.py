@@ -239,3 +239,107 @@ async def rebuild_local(db, user_id: str) -> dict:
 
     logger.info("Rebuilt references: %d citations, %d links", total_cites, total_links)
     return {"citations": total_cites, "links": total_links}
+
+
+# Relevance signal weights (nashsu 4-signal model, simplified to the two
+# signals our existing document_references table already supports).
+LINK_WEIGHT = 3.0
+SOURCE_OVERLAP_WEIGHT = 4.0
+HOP_DECAY = 0.5
+
+
+async def expand_related(
+    db, seed_ids: list[str], per_seed: int = 3, hops: int = 2
+) -> list[dict]:
+    """Graph expansion from seed documents (local SQLite).
+
+    Two signals: direct [[links]] (x3.0, both directions) and source overlap
+    (x4.0 per shared cited source). Scores decay by HOP_DECAY per hop.
+    Seeds themselves are excluded. Returns [{doc_id, score, ...}] best-first.
+    """
+    if not seed_ids:
+        return []
+
+    scores: dict[str, float] = {}
+    frontier = list(seed_ids)
+    seen = set(seed_ids)
+
+    for hop in range(hops):
+        decay = HOP_DECAY ** hop
+        placeholders = ",".join("?" for _ in frontier)
+
+        # Signal 1: direct links, both directions.
+        cur = await db.execute(
+            f"SELECT target_document_id AS id FROM document_references "
+            f"WHERE reference_type = 'links_to' AND source_document_id IN ({placeholders}) "
+            f"UNION "
+            f"SELECT source_document_id AS id FROM document_references "
+            f"WHERE reference_type = 'links_to' AND target_document_id IN ({placeholders})",
+            (*frontier, *frontier),
+        )
+        linked = [row[0] for row in await cur.fetchall()]
+        for doc_id in linked:
+            scores[doc_id] = scores.get(doc_id, 0.0) + LINK_WEIGHT * decay
+
+        # Signal 2 (hop 1 only): source overlap — pages citing a source that
+        # any seed also cites.
+        if hop == 0:
+            cur = await db.execute(
+                f"SELECT target_document_id FROM document_references "
+                f"WHERE reference_type = 'cites' AND source_document_id IN ({placeholders})",
+                frontier,
+            )
+            cited_sources = [row[0] for row in await cur.fetchall()]
+            if cited_sources:
+                src_ph = ",".join("?" for _ in cited_sources)
+                cur = await db.execute(
+                    f"SELECT source_document_id AS id, "
+                    f"COUNT(DISTINCT target_document_id) AS shared "
+                    f"FROM document_references "
+                    f"WHERE reference_type = 'cites' AND target_document_id IN ({src_ph}) "
+                    f"GROUP BY source_document_id",
+                    cited_sources,
+                )
+                for row in await cur.fetchall():
+                    scores[row[0]] = scores.get(row[0], 0.0) + SOURCE_OVERLAP_WEIGHT * min(row[1], 3)
+
+        # Next hop expands only through newly discovered link neighbors.
+        frontier = [d for d in set(linked) if d not in seen]
+        seen.update(frontier)
+        if not frontier:
+            break
+
+    # Drop the seeds, hydrate doc info, cap results.
+    for sid in seed_ids:
+        scores.pop(sid, None)
+    if not scores:
+        return []
+
+    top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    top = top[: per_seed * len(seed_ids)]
+    id_ph = ",".join("?" for _ in top)
+    cur = await db.execute(
+        f"SELECT id, filename, title, path, relative_path, source_kind "
+        f"FROM documents WHERE id IN ({id_ph}) AND status != 'failed'",
+        [doc_id for doc_id, _ in top],
+    )
+    info = {r["id"]: r for r in rows_to_dicts(cur, await cur.fetchall())}
+
+    results = []
+    for doc_id, score in top:
+        meta = info.get(doc_id)
+        if not meta:
+            continue
+        results.append({
+            "doc_id": doc_id,
+            "filename": meta["filename"],
+            "title": meta["title"] or meta["filename"],
+            "path": meta["path"],
+            "relative_path": meta["relative_path"],
+            "source_kind": meta.get("source_kind", "source"),
+            "score": score,
+            "hits": 0,
+            "snippet": "",
+            "page": None,
+        })
+    return results
