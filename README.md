@@ -12,6 +12,7 @@
 
 - **上传即自动构建** —— 新文档进入工作区后，后台队列自动执行两步 LLM 流水线（分析 → 生成），产出 wiki 页面并更新总览，无需任何对话干预
 - **知识库问答** —— 网页内聊天面板，基于检索到的文档内容回答，支持 OpenAI 兼容和 Anthropic 两种 API 协议
+- **混合检索（可选）** —— 关键词 FTS 之外可叠加向量语义召回，RRF 融合排序；向量库用 Qdrant（本地嵌入模式零服务，或 Docker 服务模式），嵌入模型可选 API 或本地离线，不配就是纯 FTS
 - **本地优先** —— 文件就是真相：wiki 是普通的 Markdown 文件，索引是可重建的 SQLite；API 只监听 127.0.0.1，你的文档不出本机
 - **MCP 工具** —— Claude（Desktop / Code / 任何 MCP 客户端）可以搜索、阅读、编辑你的 wiki
 - **文件监视** —— 直接把文件拖进文件夹也会自动索引、自动摄入；在编辑器里手改 wiki 页也会同步
@@ -44,6 +45,23 @@ INGESTION_ENABLED=true     # 打开自动摄入
 ```
 
 不配 LLM 也能用 —— 索引、搜索、浏览都正常，只是没有自动构建和问答。
+
+**（可选）向量语义检索**：在 `.env` 追加 embeddings 配置，已有工作区再跑一次 `./llmwiki embed <工作区>` 回填向量即可。嵌入后端二选一：
+
+```bash
+# 方式一：API（独立于 LLM 配置；SiliconFlow 的 BGE 模型有免费额度）
+EMBEDDING_BACKEND=api
+EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
+EMBEDDING_API_KEY=sk-...
+EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+
+# 方式二：本地模型（pip install fastembed，完全离线，无需任何 API 配置）
+EMBEDDING_BACKEND=local
+
+VECTOR_BACKEND=qdrant   # 本地嵌入模式（零服务）；换 qdrant-server + QDRANT_URL 用 Docker 服务
+```
+
+向量库需要 `pip install qdrant-client`。
 
 **3. 指向你的文档文件夹**
 

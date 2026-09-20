@@ -29,7 +29,7 @@ const STAGE_LABELS: Record<string, string> = {
 export function ChatPanel({ kbId }: { kbId: string }) {
   const [open, setOpen] = React.useState(false)
   const [enabled, setEnabled] = React.useState<boolean | null>(null)
-  const [model, setModel] = React.useState<string | null>(null)
+  const [mode, setMode] = React.useState<'fast' | 'deep'>('deep')
   const [messages, setMessages] = React.useState<Message[]>([])
   const [input, setInput] = React.useState('')
   const [streaming, setStreaming] = React.useState(false)
@@ -39,10 +39,7 @@ export function ChatPanel({ kbId }: { kbId: string }) {
   React.useEffect(() => {
     fetch(`${API_URL}/v1/chat/status`)
       .then((r) => r.json())
-      .then((d) => {
-        setEnabled(d.enabled)
-        setModel(d.model)
-      })
+      .then((d) => setEnabled(d.enabled))
       .catch(() => setEnabled(false))
   }, [])
 
@@ -65,7 +62,7 @@ export function ChatPanel({ kbId }: { kbId: string }) {
       const resp = await fetch(`${API_URL}/v1/chat/stream`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ kb_id: kbId, message: question, history }),
+        body: JSON.stringify({ kb_id: kbId, message: question, history, mode }),
       })
       if (!resp.ok || !resp.body) {
         const err = await resp.json().catch(() => null)
@@ -145,9 +142,7 @@ export function ChatPanel({ kbId }: { kbId: string }) {
   return (
     <div className="fixed bottom-6 right-6 z-50 flex h-[70vh] w-96 flex-col rounded-xl border border-border bg-background shadow-xl">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div className="text-sm font-medium">
-          知识库问答{model ? <span className="ml-2 text-xs text-muted-foreground">{model}</span> : null}
-        </div>
+        <div className="text-sm font-medium">知识库问答</div>
         <button onClick={() => setOpen(false)} aria-label="关闭">
           <X className="size-4 text-muted-foreground" />
         </button>
@@ -200,6 +195,30 @@ export function ChatPanel({ kbId }: { kbId: string }) {
       </div>
 
       <div className="border-t border-border p-3">
+        <div className="mb-2 flex">
+          <div className="flex rounded-full bg-muted p-0.5 text-xs">
+            <button
+              onClick={() => setMode('fast')}
+              className={`rounded-full px-3 py-1 transition-colors ${
+                mode === 'fast'
+                  ? 'bg-background font-medium text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              快速
+            </button>
+            <button
+              onClick={() => setMode('deep')}
+              className={`rounded-full px-3 py-1 transition-colors ${
+                mode === 'deep'
+                  ? 'bg-background font-medium text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              深度
+            </button>
+          </div>
+        </div>
         <div className="flex items-center gap-2">
           <input
             value={input}

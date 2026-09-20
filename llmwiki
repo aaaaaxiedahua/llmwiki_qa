@@ -8,6 +8,7 @@ Usage:
     llmwiki mcp <workspace>          Run stdio MCP server (for Claude config)
     llmwiki mcp-config <workspace>   Print claude_desktop_config.json snippet
     llmwiki reindex <workspace>      Force full rebuild of index.db
+    llmwiki embed <workspace>        Backfill vector embeddings (needs EMBEDDING_*)
 """
 
 import argparse
@@ -394,6 +395,24 @@ def cmd_reindex(workspace: str) -> None:
     print(f"✓ Reindexed workspace: {ws}")
 
 
+def cmd_embed(workspace: str) -> None:
+    ws = Path(workspace).resolve()
+    if not (ws / ".llmwiki" / "index.db").exists():
+        print(f"Workspace not initialized. Run: llmwiki init {ws}", file=sys.stderr)
+        sys.exit(1)
+
+    env = os.environ.copy()
+    env["MODE"] = "local"
+    env["WORKSPACE_PATH"] = str(ws)
+    _load_dotenv(env)
+    proc = subprocess.run(
+        [sys.executable, "-m", "embed_backfill"],
+        cwd=str(API_DIR),
+        env=env,
+    )
+    sys.exit(proc.returncode)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="llmwiki",
@@ -424,6 +443,9 @@ def main():
     p_reindex = sub.add_parser("reindex", help="Force full rebuild of index")
     p_reindex.add_argument("workspace", help="Path to workspace folder")
 
+    p_embed = sub.add_parser("embed", help="Backfill vector embeddings for all chunks")
+    p_embed.add_argument("workspace", help="Path to workspace folder")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -442,6 +464,8 @@ def main():
         cmd_mcp_config(args.workspace, args.name)
     elif args.command == "reindex":
         cmd_reindex(args.workspace)
+    elif args.command == "embed":
+        cmd_embed(args.workspace)
 
 
 if __name__ == "__main__":

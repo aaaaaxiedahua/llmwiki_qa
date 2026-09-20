@@ -37,9 +37,12 @@ def chat_enabled() -> bool:
 
 @router.get("/v1/chat/status")
 async def chat_status(request: Request):
+    from services import vector_index
+
     return {
         "enabled": chat_enabled(),
         "model": settings.LLM_MODEL if chat_enabled() else None,
+        "vector_enabled": vector_index.vector_leg_enabled(),
     }
 
 
@@ -52,6 +55,8 @@ class ChatRequest(BaseModel):
     kb_id: str
     message: str
     history: list[ChatMessage] = []
+    # fast = 纯 FTS 关键词检索；deep = FTS + 向量语义混合检索（向量腿需已配置）
+    mode: str = "deep"
 
 
 def _sse(event: str, data: dict) -> str:
@@ -145,7 +150,9 @@ async def chat_stream(req: ChatRequest, request: Request, user_id: str = Depends
     async def gen():
         try:
             yield _sse("status", {"stage": "searching"})
-            candidates = await retrieval.retrieve(db, req.message)
+            candidates = await retrieval.retrieve(
+                db, req.message, use_vector=req.mode != "fast"
+            )
             packed = retrieval.pack_context(
                 await retrieval.fetch_context_pages(db, candidates)
             )

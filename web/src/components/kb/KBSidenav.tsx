@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { cn } from '@/lib/utils'
 import { WikiSelector } from '@/components/kb/WikiSelector'
 import { SidenavUserMenu } from '@/components/kb/SidenavUserMenu'
+import { VectorIndexButton } from '@/components/kb/VectorIndexButton'
 import { openMcpConnectionDock } from '@/components/connections/McpConnectionDock'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
@@ -445,6 +446,9 @@ export function KBSidenav({
           </div>
         )}
       </div>
+
+      {/* Vector index — 构建检索入口（仅 local） */}
+      {isLocal && <VectorIndexButton />}
 
       {/* Sources — Upload rides the row */}
       <div className="shrink-0 px-2 pb-1">

@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     SUPABASE_JWT_SECRET: str = ""
     VOYAGE_API_KEY: str = ""
     TURBOPUFFER_API_KEY: str = ""
-    EMBEDDING_MODEL: str = "voyage-4-lite"
     EMBEDDING_DIM: int = 512
     LOGFIRE_TOKEN: str = ""
     AWS_ACCESS_KEY_ID: str = ""
@@ -58,6 +57,20 @@ class Settings(BaseSettings):
     INGESTION_ENABLED: bool = False
     INGESTION_MAX_RETRIES: int = 3
     INGESTION_UPDATE_OVERVIEW: bool = True
+
+    # 向量语义检索（仅 local 模式，可选）：关闭时检索行为与纯 FTS 完全一致。
+    # EMBEDDING_BACKEND=api  —— 需配齐 EMBEDDING_BASE_URL/API_KEY/MODEL，
+    #     独立于 LLM_*（聊天代理不一定有 embeddings 端点），SiliconFlow 有免费 BGE
+    # EMBEDDING_BACKEND=local —— fastembed 本地跑 BGE（pip install fastembed），完全离线
+    EMBEDDING_BACKEND: str = "api"  # "api" | "local"
+    EMBEDDING_BASE_URL: str = ""
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
+    LOCAL_EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
+    EMBEDDING_BATCH_SIZE: int = 32
+    # 向量库（Qdrant）：qdrant（本地嵌入模式，零服务）/ qdrant-server（Docker 服务）
+    VECTOR_BACKEND: str = "qdrant"
+    QDRANT_URL: str = ""  # 仅 qdrant-server 需要，如 http://localhost:6333
 
     GLOBAL_OCR_ENABLED: bool = True
     GLOBAL_MAX_PAGES: int = 1_000_000

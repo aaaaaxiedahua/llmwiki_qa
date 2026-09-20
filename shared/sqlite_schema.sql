@@ -128,6 +128,17 @@ CREATE TRIGGER IF NOT EXISTS chunks_fts_update AFTER UPDATE ON document_chunks B
     INSERT INTO chunks_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 
+-- Vector leg (optional): registry of which chunks have been embedded with
+-- which model. Vectors themselves live in Qdrant (embedded local mode under
+-- .llmwiki/qdrant/, or a server via QDRANT_URL); this table is bookkeeping
+-- so the embedding worker can find missing/stale chunks with plain SQL.
+-- Derived data — safe to delete and rebuild via the embedding worker.
+CREATE TABLE IF NOT EXISTS chunk_embeddings (
+    chunk_id TEXT PRIMARY KEY REFERENCES document_chunks(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_documents_relative_path ON documents(relative_path);
 CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path);
 CREATE INDEX IF NOT EXISTS idx_documents_source_kind ON documents(source_kind);

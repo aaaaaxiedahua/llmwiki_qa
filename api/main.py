@@ -189,6 +189,13 @@ async def _local_lifespan(app: FastAPI):
         )
         logger.info("Ingestion worker started")
 
+    embed_db = await create_sqlite_pool(db_path, init_schema=False)
+    embed_task = None
+    from services.vector_index import run_embed_worker, vector_leg_enabled
+    if vector_leg_enabled():
+        embed_task = asyncio.create_task(run_embed_worker(embed_db))
+        logger.info("Embedding worker started")
+
     try:
         yield
     finally:
@@ -209,9 +216,16 @@ async def _local_lifespan(app: FastAPI):
                 await ingestion_task
             except asyncio.CancelledError:
                 pass
+        if embed_task:
+            embed_task.cancel()
+            try:
+                await embed_task
+            except asyncio.CancelledError:
+                pass
         await reconcile_db.close()
         await watcher_db.close()
         await ingestion_db.close()
+        await embed_db.close()
         await db.close()
 
 
@@ -280,6 +294,7 @@ app.include_router(events_router)
 
 if settings.MODE == "local":
     from routes.chat import router as chat_router
+    from routes.embeddings import router as embeddings_router
     from routes.files import router as files_router
     from routes.files import set_workspace_root
     from routes.ingestion import router as ingestion_router
@@ -290,6 +305,7 @@ if settings.MODE == "local":
     app.include_router(local_graph_router)
     app.include_router(chat_router)
     app.include_router(ingestion_router)
+    app.include_router(embeddings_router)
     set_workspace_root(settings.WORKSPACE_PATH)
 else:
     from infra.tus import router as tus_router

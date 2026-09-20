@@ -1,12 +1,13 @@
 """Retrieval pipeline for the local QA chat window (nashsu-style).
 
 Deterministic multi-stage pipeline — no LLM calls in the middle:
-  Stage 1: FTS5 trigram search over chunks (wiki pages + sources), title boost
+  Stage 1: FTS5 trigram search over chunks (wiki pages + sources), title boost;
+           optionally a parallel vector leg (semantic recall), RRF-fused
   Stage 2: graph expansion via services.graph.expand_related
   Stage 3: token-budget packing of the context
 
-The vector leg is deliberately a Protocol placeholder: plugging in embeddings
-later means adding another Retriever implementation, not changing the flow.
+The vector leg is optional and off unless EMBEDDING_* is configured; when
+off, Stage 1 is exactly the FTS path and results are unchanged.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from typing import Protocol
 
 from infra.db.sqlite import rows_to_dicts
 from services.graph import expand_related
+
+RRF_K = 60  # standard reciprocal-rank-fusion constant
 
 
 # Rough token estimate: CJK chars ≈ 1 token each, ASCII words ≈ 0.75.
@@ -124,14 +127,49 @@ async def search_documents(db, query: str, limit: int = 10) -> list[dict]:
     return results[:limit]
 
 
+def rrf_fuse(legs: list[list[dict]], limit: int) -> list[dict]:
+    """Reciprocal rank fusion: score = Σ 1/(K + rank) over each leg.
+
+    Rank-based, so no score-scale alignment between FTS (bm25) and vector
+    (cosine) legs is needed. Entries shared across legs keep the metadata of
+    their best-ranked appearance.
+    """
+    merged: dict[str, dict] = {}
+    for leg in legs:
+        for rank, entry in enumerate(leg):
+            doc_id = entry["doc_id"]
+            existing = merged.get(doc_id)
+            if existing is None:
+                merged[doc_id] = {**entry, "score": 1.0 / (RRF_K + rank)}
+            else:
+                existing["score"] += 1.0 / (RRF_K + rank)
+    results = sorted(merged.values(), key=lambda e: e["score"], reverse=True)
+    return results[:limit]
+
+
 async def retrieve(
     db,
     query: str,
     seed_limit: int = 8,
     expand_per_seed: int = 3,
+    use_vector: bool | None = None,
 ) -> list[dict]:
-    """Stages 1+2: search, then expand through the reference graph."""
-    seeds = await search_documents(db, query, limit=seed_limit)
+    """Stages 1+2: search, then expand through the reference graph.
+
+    use_vector=None follows server config; explicit False forces the pure
+    FTS leg (chat "fast" mode) even when embeddings are configured.
+    """
+    fts_results = await search_documents(db, query, limit=seed_limit)
+
+    from services import vector_index
+    vector_on = vector_index.vector_leg_enabled() if use_vector is None else (
+        use_vector and vector_index.vector_leg_enabled()
+    )
+    if vector_on:
+        vec_results = await vector_index.search(db, query, limit=seed_limit)
+        seeds = rrf_fuse([fts_results, vec_results], limit=seed_limit)
+    else:
+        seeds = fts_results
     if not seeds:
         return []
 

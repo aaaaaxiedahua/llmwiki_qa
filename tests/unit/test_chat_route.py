@@ -87,7 +87,7 @@ async def test_status_enabled(app):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         resp = await client.get("/v1/chat/status")
-    assert resp.json() == {"enabled": True, "model": "test-model"}
+    assert resp.json() == {"enabled": True, "model": "test-model", "vector_enabled": False}
 
 
 async def test_stream_sse_flow_and_synthesis_writeback(app):

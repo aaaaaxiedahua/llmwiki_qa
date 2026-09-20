@@ -16,6 +16,10 @@ opendataloader-pdf==2.3.0
 aiosqlite==0.22.1
 watchfiles==1.1.0
 slowapi==0.1.9
+# Optional: required by the vector leg (EMBEDDING_* / semantic search)
+# qdrant-client==1.12.0
+# Optional: only needed for EMBEDDING_BACKEND=local (offline BGE via onnxruntime)
+# fastembed==0.7.1
 # Pinned to override vulnerable transitive resolutions.
 aiohttp==3.14.3
 cryptography==50.0.0
