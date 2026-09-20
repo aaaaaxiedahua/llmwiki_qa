@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-把散落的 PDF、Word、笔记丢进一个文件夹，LLM Wiki-qa 会自动把它们蒸馏成一座互相链接的 Markdown 维基：概念页、实体页、来源摘要页，外加自动维护的总览页。之后你可以直接在网页里向自己的知识库提问，也可以让 Claude 通过 MCP 读写这座 wiki。
+把散落的 PDF、Word、笔记丢进一个文件夹，LLM Wiki-qa 会自动把它们蒸馏成一座互相链接的 Markdown 维基：概念页、实体页、来源摘要页，外加自动维护的总览页。之后你可以直接在网页里向自己的知识库提问，也可以使用智能体通过 MCP 读写这座 wiki。
 
 灵感来自 [Andrej Karpathy 的 LLM Wiki 构想](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)：完全本地运行、上传即自动构建，不依赖任何云端服务。
 
