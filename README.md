@@ -6,11 +6,7 @@
 
 把散落的 PDF、Word、笔记丢进一个文件夹，LLM Wiki 会自动把它们蒸馏成一座互相链接的 Markdown 维基：概念页、实体页、来源摘要页，外加自动维护的总览页。之后你可以直接在网页里向自己的知识库提问，也可以让 Claude 通过 MCP 读写这座 wiki。
 
-灵感来自 [Andrej Karpathy 的 LLM Wiki 构想](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)，本项目在 [lucasastorian/llmwiki](https://github.com/lucasastorian/llmwiki) 基础上二次开发，改为**完全本地运行 + 上传即自动构建**，不依赖任何云端服务。
-
-<p align="center">
-  <img src="wiki-page.png" alt="LLM Wiki 生成的 wiki 页面" width="820" />
-</p>
+灵感来自 [Andrej Karpathy 的 LLM Wiki 构想](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)：完全本地运行、上传即自动构建，不依赖任何云端服务。
 
 ## 特性
 
