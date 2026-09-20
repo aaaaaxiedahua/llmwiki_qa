@@ -1,10 +1,10 @@
-# LLM Wiki
+# LLM Wiki-qa
 
 **AI 自动维护的个人知识库 —— 丢进文档，wiki 自己长出来。**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-把散落的 PDF、Word、笔记丢进一个文件夹，LLM Wiki 会自动把它们蒸馏成一座互相链接的 Markdown 维基：概念页、实体页、来源摘要页，外加自动维护的总览页。之后你可以直接在网页里向自己的知识库提问，也可以让 Claude 通过 MCP 读写这座 wiki。
+把散落的 PDF、Word、笔记丢进一个文件夹，LLM Wiki-qa 会自动把它们蒸馏成一座互相链接的 Markdown 维基：概念页、实体页、来源摘要页，外加自动维护的总览页。之后你可以直接在网页里向自己的知识库提问，也可以让 Claude 通过 MCP 读写这座 wiki。
 
 灵感来自 [Andrej Karpathy 的 LLM Wiki 构想](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)：完全本地运行、上传即自动构建，不依赖任何云端服务。
 
@@ -37,9 +37,9 @@ cd web && npm install && cd ..
 复制 `.env.example` 为 `.env`，填入你的模型服务（任选兼容 OpenAI 或 Anthropic 协议的端点）：
 
 ```bash
-LLM_BASE_URL=https://api.moonshot.cn/v1
-LLM_API_KEY=sk-...
-LLM_MODEL=kimi-k2
+LLM_BASE_URL=https://your-llm-endpoint.example.com/v1
+LLM_API_KEY=sk-your-api-key
+LLM_MODEL=your-model-name
 LLM_PROTOCOL=openai        # 或 anthropic
 INGESTION_ENABLED=true     # 打开自动摄入
 ```
@@ -52,8 +52,8 @@ INGESTION_ENABLED=true     # 打开自动摄入
 # 方式一：API（独立于 LLM 配置；SiliconFlow 的 BGE 模型有免费额度）
 EMBEDDING_BACKEND=api
 EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
-EMBEDDING_API_KEY=sk-...
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+EMBEDDING_API_KEY=sk-your-api-key
+EMBEDDING_MODEL=your-embedding_model
 
 # 方式二：本地模型（pip install fastembed，完全离线，无需任何 API 配置）
 EMBEDDING_BACKEND=local
@@ -102,7 +102,7 @@ VECTOR_BACKEND=qdrant   # 本地嵌入模式（零服务）；换 qdrant-server 
 ~/research/                  # 你的文件，原封不动
   papers/paper.pdf
   notes.md
-  wiki/                      # LLM Wiki 生成的页面
+  wiki/                      # LLM Wiki-qa 生成的页面
     overview.md              # 自动维护的总览
     sources/                 # 每篇文档的摘要页
     concepts/                # 概念页
