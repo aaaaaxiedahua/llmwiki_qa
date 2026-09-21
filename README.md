@@ -130,3 +130,7 @@ cd web && npm run check && npm test
 # Lint
 ruff check .
 ```
+
+## License
+
+本项目基于 Apache License 2.0 开源，详见 [LICENSE](LICENSE)。
