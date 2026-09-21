@@ -2,7 +2,6 @@
 
 **AI 自动维护的个人知识库 —— 丢进文档，wiki 自己长出来。**
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
 把散落的 PDF、Word、笔记丢进一个文件夹，LLM Wiki-qa 会自动把它们蒸馏成一座互相链接的 Markdown 维基：概念页、实体页、来源摘要页，外加自动维护的总览页。之后你可以直接在网页里向自己的知识库提问，也可以使用智能体通过 MCP 读写这座 wiki。
 
@@ -141,7 +140,3 @@ cd web && npm run check && npm test
 # Lint
 ruff check .
 ```
-
-## License
-
-Apache 2.0 — 见 [LICENSE](LICENSE)。
