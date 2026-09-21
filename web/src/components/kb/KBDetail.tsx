@@ -11,6 +11,7 @@ import { apiFetch } from '@/lib/api'
 import { refreshAccessToken } from '@/lib/auth-token'
 import { toast } from 'sonner'
 import { KBSidenav } from '@/components/kb/KBSidenav'
+import { ChatSessionsView } from '@/components/chat/ChatSessionsView'
 import { openMcpConnectionDock } from '@/components/connections/McpConnectionDock'
 import { SelectionActionBar } from '@/components/kb/SelectionActionBar'
 import { WikiContent } from '@/components/wiki/WikiContent'
@@ -169,6 +170,8 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       url += clean ? `/files/${encodeURI(clean)}` : '/files'
     } else if (view === 'graph') {
       url += '/graph'
+    } else if (view === 'chat') {
+      url += '/chat'
     }
     if (opts?.searchParams) {
       const sp = new URLSearchParams(opts.searchParams)
@@ -195,6 +198,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
 
   const filesViewActive = activeView === 'files' || activeView === 'doc'
   const graphViewActive = activeView === 'graph'
+  const chatViewActive = activeView === 'chat'
 
   // ─── Wiki page selection (from ?p= search param) ─────────────
   const pParam = searchParams.get('p')
@@ -450,6 +454,19 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       navigateToView('graph')
     }
   }, [graphViewActive, navigateToView])
+
+  const handleChatToggle = React.useCallback(() => {
+    if (chatViewActive) {
+      const sp = lastWikiDocNumberRef.current != null
+        ? { p: String(lastWikiDocNumberRef.current) }
+        : undefined
+      setActiveView('wiki')
+      navigateToView('wiki', { searchParams: sp })
+    } else {
+      setActiveView('chat')
+      navigateToView('chat')
+    }
+  }, [chatViewActive, navigateToView])
 
   const handleGraphNodeClick = React.useCallback((docId: string, sourceKind: string) => {
     const doc = documents.find((d) => d.id === docId)
@@ -807,8 +824,8 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
   // ─── Loading state ───────────────────────────────────────────
   const showMainLoading =
     loading ||
-    (!filesViewActive && !graphViewActive && hasNavigableWiki && !wikiActivePath) ||
-    (!filesViewActive && !graphViewActive && !!wikiActivePath && pageLoadedPath !== wikiActivePath)
+    (!filesViewActive && !graphViewActive && !chatViewActive && hasNavigableWiki && !wikiActivePath) ||
+    (!filesViewActive && !graphViewActive && !chatViewActive && !!wikiActivePath && pageLoadedPath !== wikiActivePath)
 
   // ─── Render ──────────────────────────────────────────────────
   return (
@@ -853,6 +870,8 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
             onFilesToggle={handleFilesToggle}
             graphViewActive={graphViewActive}
             onGraphToggle={handleGraphToggle}
+            chatViewActive={chatViewActive}
+            onChatToggle={isLocal ? handleChatToggle : undefined}
             onOpenSourceDoc={handleOpenSourceDoc}
             recentActive={false}
             onRecentSelect={() => router.push(`/wikis/${kbSlug}`)}
@@ -870,6 +889,17 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
                 className="flex items-center justify-center h-full"
               >
                 <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              </motion.div>
+            ) : chatViewActive ? (
+              <motion.div
+                key="chat"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
+                className="h-full"
+              >
+                <ChatSessionsView kbId={kbId} />
               </motion.div>
             ) : graphViewActive ? (
               <motion.div

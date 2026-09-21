@@ -1,1 +1,1 @@
-export type ViewMode = 'wiki' | 'files' | 'graph'
+export type ViewMode = 'wiki' | 'files' | 'graph' | 'chat'

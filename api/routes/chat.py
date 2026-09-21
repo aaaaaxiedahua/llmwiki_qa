@@ -19,7 +19,7 @@ from deps import get_user_id
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from services import llm_gateway, retrieval
+from services import chat_memory, llm_gateway, retrieval
 from services.graph import rebuild_local
 
 logger = logging.getLogger(__name__)
@@ -54,9 +54,61 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     kb_id: str
     message: str
+    # session_id：持久化会话（历史从库里读）；仅传 history：悬浮窗免持久化快速问答
+    session_id: str | None = None
     history: list[ChatMessage] = []
     # fast = 纯 FTS 关键词检索；deep = FTS + 向量语义混合检索（向量腿需已配置）
     mode: str = "deep"
+
+
+class SessionRename(BaseModel):
+    title: str
+
+
+@router.get("/v1/chat/sessions")
+async def list_chat_sessions(
+    request: Request, kb_id: str, user_id: str = Depends(get_user_id)
+):
+    from services import chat_sessions
+
+    return await chat_sessions.list_sessions(request.app.state.sqlite_db, kb_id)
+
+
+@router.get("/v1/chat/sessions/{session_id}/messages")
+async def get_chat_messages(
+    request: Request, session_id: str, user_id: str = Depends(get_user_id)
+):
+    from services import chat_sessions
+
+    return await chat_sessions.get_messages(request.app.state.sqlite_db, session_id)
+
+
+@router.patch("/v1/chat/sessions/{session_id}")
+async def rename_chat_session(
+    request: Request, session_id: str, body: SessionRename,
+    user_id: str = Depends(get_user_id),
+):
+    from services import chat_sessions
+
+    title = " ".join(body.title.split())[: chat_sessions.TITLE_MAX_CHARS]
+    if not title:
+        return JSONResponse(status_code=400, content={"detail": "title is empty"})
+    ok = await chat_sessions.rename_session(request.app.state.sqlite_db, session_id, title)
+    if not ok:
+        return JSONResponse(status_code=404, content={"detail": "session not found"})
+    return {"id": session_id, "title": title}
+
+
+@router.delete("/v1/chat/sessions/{session_id}", status_code=204)
+async def delete_chat_session(
+    request: Request, session_id: str, user_id: str = Depends(get_user_id)
+):
+    from services import chat_sessions
+
+    ok = await chat_sessions.delete_session(request.app.state.sqlite_db, session_id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"detail": "session not found"})
+    return None
 
 
 def _sse(event: str, data: dict) -> str:
@@ -73,11 +125,12 @@ SYSTEM_PROMPT = """你是这个个人知识库的问答助手。根据下面检�
 
 检索到的页面：
 {pages}
-"""
+{summary}"""
 
 
 def _build_messages(
-    req: ChatRequest, packed: list[dict], purpose: str, overview: str
+    req: ChatRequest, packed: list[dict], purpose: str, overview: str,
+    window: list[dict], summary: str,
 ) -> list[dict]:
     page_blocks = []
     for p in packed:
@@ -87,13 +140,14 @@ def _build_messages(
     purpose_block = f"\n本知识库的定位：{purpose}\n" if purpose else ""
     if overview:
         purpose_block += f"\n知识库概览（节选）：{overview[:500]}\n"
+    summary_block = f"\n此前对话摘要：{summary}\n" if summary else ""
     system = SYSTEM_PROMPT.format(
-        purpose=purpose_block, pages="\n\n".join(page_blocks) or "（未检索到相关页面）"
+        purpose=purpose_block,
+        pages="\n\n".join(page_blocks) or "（未检索到相关页面）",
+        summary=summary_block,
     )
     messages = [{"role": "system", "content": system}]
-    for h in req.history[-10:]:
-        if h.role in ("user", "assistant"):
-            messages.append({"role": h.role, "content": h.content})
+    messages.extend(window)
     messages.append({"role": "user", "content": req.message})
     return messages
 
@@ -148,10 +202,57 @@ async def chat_stream(req: ChatRequest, request: Request, user_id: str = Depends
     db = request.app.state.sqlite_db
 
     async def gen():
+        from services import chat_sessions
+
+        session_id = req.session_id
         try:
+            if session_id:
+                # Persisted session: history comes from the store, not the client.
+                cursor = await db.execute(
+                    "SELECT 1 FROM chat_sessions WHERE id = ?", (session_id,)
+                )
+                if not await cursor.fetchone():
+                    yield _sse("error", {"detail": "session not found"})
+                    return
+                stored = await chat_sessions.get_messages(db, session_id)
+                cleaned = [
+                    {"role": m["role"],
+                     "content": chat_memory.strip_footnote_definitions(m["content"])
+                     if m["role"] == "assistant" else m["content"]}
+                    for m in stored
+                ]
+                summary = await chat_sessions.ensure_summary(db, session_id, cleaned)
+            else:
+                cleaned = [
+                    {"role": h.role,
+                     "content": chat_memory.strip_footnote_definitions(h.content)
+                     if h.role == "assistant" else h.content}
+                    for h in req.history
+                    if h.role in ("user", "assistant")
+                ]
+                if cleaned:
+                    # Floating panel quick chat: ephemeral, never persisted.
+                    summary = ""
+                else:
+                    # First message of a new session: create it and tell the client.
+                    session = await chat_sessions.create_session(
+                        db, req.kb_id, user_id, chat_sessions.make_title(req.message)
+                    )
+                    session_id = session["id"]
+                    yield _sse("session", session)
+                    summary = ""
+
+            _, window = chat_memory.split_window(cleaned)
+
+            # Query rewrite gives follow-ups ("那它的缺点呢") a standalone
+            # retrieval query; skipped in fast mode to keep latency low.
+            query = req.message
+            if req.mode != "fast" and cleaned:
+                query = await chat_memory.rewrite_query(summary, window, req.message)
+
             yield _sse("status", {"stage": "searching"})
             candidates = await retrieval.retrieve(
-                db, req.message, use_vector=req.mode != "fast"
+                db, query, use_vector=req.mode != "fast"
             )
             packed = retrieval.pack_context(
                 await retrieval.fetch_context_pages(db, candidates)
@@ -174,16 +275,23 @@ async def chat_stream(req: ChatRequest, request: Request, user_id: str = Depends
             yield _sse("status", {"stage": "generating"})
             answer_parts = []
             async for delta in llm_gateway.chat_stream(
-                _build_messages(req, packed, purpose, overview)
+                _build_messages(req, packed, purpose, overview, window, summary)
             ):
                 answer_parts.append(delta)
                 yield _sse("delta", {"content": delta})
 
             answer = "".join(answer_parts)
+            references = [{"num": p["num"], "title": p["title"],
+                           "relative_path": p["relative_path"]} for p in packed]
             yield _sse("done", {
-                "references": [{"num": p["num"], "title": p["title"],
-                                "relative_path": p["relative_path"]} for p in packed],
+                "session_id": session_id,
+                "references": references,
             })
+
+            if session_id:
+                await chat_sessions.append_exchange(
+                    db, session_id, req.message, answer, references
+                )
 
             asyncio.create_task(
                 _file_synthesis(request, user_id, req.kb_id, req.message, answer, packed)

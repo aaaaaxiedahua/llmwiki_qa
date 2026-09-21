@@ -6,7 +6,7 @@ import {
   ChevronRight, FileText, NotepadText, Library,
   Upload, BookOpen, ArrowUpRight, Search as SearchIcon,
   Lightbulb, Box, ScrollText, Network, Folder, Check, ListChecks, Lock, Plug,
-  PanelLeftClose, PanelLeftOpen, History,
+  PanelLeftClose, PanelLeftOpen, History, MessagesSquare,
 } from 'lucide-react'
 import {
   CommandDialog, CommandInput, CommandList, CommandItem,
@@ -68,6 +68,8 @@ interface KBSidenavProps {
   onFilesToggle: () => void
   graphViewActive: boolean
   onGraphToggle: () => void
+  chatViewActive?: boolean
+  onChatToggle?: () => void
   onOpenSourceDoc: (docId: string) => void
   recentActive?: boolean
   onRecentSelect?: () => void
@@ -90,6 +92,8 @@ export function KBSidenav({
   onFilesToggle,
   graphViewActive,
   onGraphToggle,
+  chatViewActive = false,
+  onChatToggle,
   onOpenSourceDoc,
   recentActive = false,
   onRecentSelect,
@@ -214,6 +218,20 @@ export function KBSidenav({
               >
                 <Network className="size-3.5" />
               </button>
+              {onChatToggle && (
+                <button
+                  onClick={onChatToggle}
+                  title="问答"
+                  className={cn(
+                    'flex items-center justify-center size-8 rounded-md transition-colors cursor-pointer',
+                    chatViewActive
+                      ? 'bg-accent text-foreground'
+                      : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent',
+                  )}
+                >
+                  <MessagesSquare className="size-3.5" />
+                </button>
+              )}
               <button
                 onClick={onUpload}
                 title="Upload files"
@@ -282,6 +300,20 @@ export function KBSidenav({
             title="Knowledge graph"
           >
             <Network className="size-3" />
+          </button>
+        )}
+        {!courseMode && onChatToggle && (
+          <button
+            onClick={onChatToggle}
+            className={cn(
+              'flex items-center justify-center size-8 shrink-0 border rounded-md transition-colors cursor-pointer',
+              chatViewActive
+                ? 'bg-accent text-foreground border-border'
+                : 'text-muted-foreground/50 hover:text-muted-foreground border-border hover:bg-accent',
+            )}
+            title="问答"
+          >
+            <MessagesSquare className="size-3" />
           </button>
         )}
       </div>
@@ -446,6 +478,24 @@ export function KBSidenav({
           </div>
         )}
       </div>
+
+      {/* 问答入口（仅 local，chat 路由只在本地模式注册） */}
+      {onChatToggle && (
+        <div className="shrink-0 px-2 pb-1">
+          <button
+            onClick={onChatToggle}
+            className={cn(
+              'flex items-center gap-2 w-full px-2.5 py-2 text-[13px] rounded-md transition-colors cursor-pointer',
+              chatViewActive
+                ? 'bg-accent text-foreground font-medium'
+                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+            )}
+          >
+            <MessagesSquare className="size-3.5" />
+            <span className="flex-1 text-left">问答</span>
+          </button>
+        </div>
+      )}
 
       {/* Vector index — 构建检索入口（仅 local） */}
       {isLocal && <VectorIndexButton />}

@@ -171,6 +171,36 @@ CREATE TABLE IF NOT EXISTS ingestion_queue (
 CREATE INDEX IF NOT EXISTS idx_ingestion_queue_status ON ingestion_queue(status);
 CREATE INDEX IF NOT EXISTS idx_ingestion_queue_doc ON ingestion_queue(document_id);
 
+-- Chat sessions (local QA window): persisted so a refresh keeps history and
+-- the rolling summary survives restarts. summary/summarized_count track the
+-- rolling compression of messages older than the sliding window.
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    knowledge_base_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '新会话',
+    summary TEXT NOT NULL DEFAULT '',
+    summarized_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    references_json TEXT NOT NULL DEFAULT '[]',
+    seq INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(session_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_kb
+    ON chat_sessions(knowledge_base_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+    ON chat_messages(session_id, seq);
+
 CREATE TRIGGER IF NOT EXISTS knowledge_base_activity_insert
 AFTER INSERT ON workspace
 BEGIN

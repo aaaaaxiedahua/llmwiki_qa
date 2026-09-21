@@ -528,6 +528,8 @@ export function WikiOnlyDetail({
             onFilesToggle={() => router.push(`/wikis/${kbSlug}/files`)}
             graphViewActive={false}
             onGraphToggle={() => router.push(`/wikis/${kbSlug}/graph`)}
+            chatViewActive={false}
+            onChatToggle={isLocal ? () => router.push(`/wikis/${kbSlug}/chat`) : undefined}
             onOpenSourceDoc={(docId) => {
               const doc = documents.find((d) => d.id === docId)
               if (doc) openSourceDoc(doc)
