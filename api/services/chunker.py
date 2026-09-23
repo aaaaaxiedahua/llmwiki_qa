@@ -1,28 +1,45 @@
 """Text chunker with header breadcrumb tracking.
 
-Splits document content into ~512 token chunks with ~128 token overlap.
-Tracks markdown headers to build breadcrumb context per chunk.
+Char-based budgets sized for the embedding model: bge-large-zh-v1.5 truncates
+at 512 tokens and CJK is ~1 token/char, so chunks are capped at 500 chars —
+safe for pure Chinese, conservative for English. The cap is a *budget*, not a
+guillotine: oversized text descends a priority ladder of natural boundaries
+(heading sections → blank-line paragraphs → lines → sentence terminators →
+whitespace) and only hard-slices as the last resort. Fenced code blocks and
+tables are atomic — never torn; if one exceeds the cap it is emitted whole
+and flagged ``oversized`` (the model truncates, but the structure survives).
+Chunks under 100 chars are merged into a neighbor instead of dropped, and
+consecutive chunks share ~100 chars of boundary-aligned overlap.
 """
 
-import re
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 
 import asyncpg
 
 logger = logging.getLogger(__name__)
 
-CHUNK_SIZE = 512
-CHUNK_OVERLAP = 128
-MIN_CHUNK_TOKENS = 32
-MAX_CHUNK_CHARS = 10_000  # matches DB constraint chk_chunks_content_length
+TARGET_CHARS = 400
+MAX_CHARS = 500
+OVERLAP_CHARS = 100  # 20% of the cap, boundary-aligned
+MIN_CHARS = 100  # smaller chunks merge into a neighbor, never dropped
+MAX_CHUNK_CHARS = 10_000  # hosted DB constraint chk_chunks_content_length
 
-SENTENCE_RE = re.compile(r'(?<=[.!?。！？])\s+')
-HEADER_RE = re.compile(r'^(#{1,6})\s+(.+)$', re.MULTILINE)
+HEADER_RE = re.compile(r'^(#{1,6})\s+(.+)$')
+FENCE_RE = re.compile(r'(?m)^[ \t]*(`{3,})')
+BLANK_RE = re.compile(r'\n\s*\n')
+SENTENCE_RE = re.compile(r'[。！？!?；;]|\.(?=\s)')
+WS_RE = re.compile(r'\s')
+_CJK_RE = re.compile(r'[　-〿㐀-䶿一-鿿＀-￯]')
 
 
 def _estimate_tokens(text: str) -> int:
-    return max(1, len(text) // 4)
+    """CJK-aware estimate: ~1 token per CJK char, ~4 chars/token otherwise."""
+    if not text:
+        return 1
+    cjk = len(_CJK_RE.findall(text))
+    return max(1, cjk + (len(text) - cjk) // 4)
 
 
 @dataclass
@@ -33,134 +50,224 @@ class Chunk:
     start_char: int
     token_count: int
     header_breadcrumb: str = ""
+    oversized: bool = False  # atomic unit over MAX_CHARS, emitted whole
+
+
+@dataclass
+class _Atom:
+    start: int
+    end: int
+    oversized: bool
+    heading: bool
+    crumb: str
 
 
 def chunk_text(
     content: str,
-    chunk_size: int = CHUNK_SIZE,
-    overlap: int = CHUNK_OVERLAP,
     page: int | None = None,
     start_char_offset: int = 0,
 ) -> list[Chunk]:
-    """Chunk a text string into overlapping segments with header tracking."""
+    """Chunk a text string with header tracking, overlap and min-merge."""
     if not content or not content.strip():
         return []
 
-    paragraphs = _split_paragraphs(content)
-    header_stack: list[tuple[int, str]] = []
+    atoms = _build_atoms(content)
+    spans = _pack_atoms(atoms)
+    spans = _merge_small(spans, content)
+
     chunks: list[Chunk] = []
-    current_blocks: list[str] = []
-    current_tokens = 0
-    current_start = start_char_offset
-    char_pos = start_char_offset
-
-    for para in paragraphs:
-        para_tokens = _estimate_tokens(para)
-
-        header_match = HEADER_RE.match(para)
-        if header_match:
-            level = len(header_match.group(1))
-            heading = header_match.group(2).strip()
-            header_stack = [(l, t) for l, t in header_stack if l < level]
-            header_stack.append((level, heading))
-
-        if current_tokens + para_tokens > chunk_size and current_blocks:
-            chunk_text_str = "\n\n".join(current_blocks)
-            if _estimate_tokens(chunk_text_str) >= MIN_CHUNK_TOKENS:
-                breadcrumb = " > ".join(t for _, t in header_stack)
-                chunks.append(Chunk(
-                    index=len(chunks),
-                    content=chunk_text_str,
-                    page=page,
-                    start_char=current_start,
-                    token_count=_estimate_tokens(chunk_text_str),
-                    header_breadcrumb=breadcrumb,
-                ))
-
-            overlap_blocks, overlap_tokens = _get_overlap(current_blocks, overlap)
-            current_blocks = overlap_blocks
-            current_tokens = overlap_tokens
-            current_start = char_pos - sum(len(b) + 2 for b in overlap_blocks)
-
-        current_blocks.append(para)
-        current_tokens += para_tokens
-        char_pos += len(para) + 2
-
-    if current_blocks:
-        chunk_text_str = "\n\n".join(current_blocks)
-        if _estimate_tokens(chunk_text_str) >= MIN_CHUNK_TOKENS:
-            breadcrumb = " > ".join(t for _, t in header_stack)
-            chunks.append(Chunk(
-                index=len(chunks),
-                content=chunk_text_str,
-                page=page,
-                start_char=current_start,
-                token_count=_estimate_tokens(chunk_text_str),
-                header_breadcrumb=breadcrumb,
-            ))
-
-    return _enforce_max_chars(chunks)
+    for start, end, oversized, crumb in spans:
+        raw = content[start:end]
+        text = raw.strip()
+        lead = len(raw) - len(raw.lstrip())
+        chunks.append(Chunk(
+            index=len(chunks),
+            content=text,
+            page=page,
+            start_char=start_char_offset + start + lead,
+            token_count=_estimate_tokens(text),
+            header_breadcrumb=crumb,
+            oversized=oversized,
+        ))
+    return chunks
 
 
-def _enforce_max_chars(chunks: list[Chunk]) -> list[Chunk]:
-    """Split any chunk whose content exceeds MAX_CHUNK_CHARS.
+# ── atom extraction ────────────────────────────────────────────────────────
 
-    The paragraph-based chunker emits one chunk per paragraph when a single
-    paragraph is bigger than CHUNK_SIZE — fine for English wiki text, but CJK
-    paragraphs and long code blocks routinely exceed the 10k-char DB limit.
-    Split such chunks on sentence boundaries; fall back to fixed-size slices
-    if no sentence break is available.
-    """
-    if not any(len(c.content) > MAX_CHUNK_CHARS for c in chunks):
-        return chunks
+def _build_atoms(content: str) -> list[_Atom]:
+    """Split content into atoms: spans no bigger than MAX_CHARS (or atomic
+    oversized code/table blocks), each tagged with its header breadcrumb."""
+    atoms: list[_Atom] = []
+    header_stack: list[tuple[int, str]] = []
 
-    result: list[Chunk] = []
-    for c in chunks:
-        if len(c.content) <= MAX_CHUNK_CHARS:
-            result.append(Chunk(
-                index=len(result), content=c.content, page=c.page,
-                start_char=c.start_char, token_count=c.token_count,
-                header_breadcrumb=c.header_breadcrumb,
-            ))
-            continue
-        # Each split piece gets its own start_char (base + cumulative offset)
-        # so downstream consumers (e.g. text-anchor highlight mapping) can
-        # derive each piece's end as start_char + len(content) without
-        # adjacent pieces appearing to start at the same paragraph offset.
-        base = c.start_char or 0
-        offset = 0
-        for piece in _split_oversized(c.content):
-            result.append(Chunk(
-                index=len(result), content=piece, page=c.page,
-                start_char=base + offset, token_count=_estimate_tokens(piece),
-                header_breadcrumb=c.header_breadcrumb,
-            ))
-            offset += len(piece)
-    return result
+    def crumb() -> str:
+        return " > ".join(t for _, t in header_stack)
 
-
-def _split_oversized(text: str) -> list[str]:
-    parts = SENTENCE_RE.split(text)
-    pieces: list[str] = []
-    current = ""
-    for part in parts:
-        candidate = (current + " " + part).strip() if current else part
-        if len(candidate) <= MAX_CHUNK_CHARS:
-            current = candidate
-        else:
-            if current:
-                pieces.append(current)
-            if len(part) <= MAX_CHUNK_CHARS:
-                current = part
+    for start, end, atomic in _blocks(content):
+        block = content[start:end]
+        header = HEADER_RE.match(block)
+        if header and not atomic:
+            level = len(header.group(1))
+            header_stack = [(lv, t) for lv, t in header_stack if lv < level]
+            header_stack.append((level, header.group(2).strip()))
+        if end - start <= MAX_CHARS:
+            atoms.append(_Atom(start, end, False, bool(header and not atomic), crumb()))
+        elif atomic:
+            # Never tear code/tables. Past the DB limit there is no choice.
+            if end - start <= MAX_CHUNK_CHARS:
+                atoms.append(_Atom(start, end, True, False, crumb()))
             else:
-                # Sentence-split didn't help — hard-slice.
-                for i in range(0, len(part), MAX_CHUNK_CHARS):
-                    pieces.append(part[i:i + MAX_CHUNK_CHARS])
-                current = ""
-    if current:
-        pieces.append(current)
-    return pieces
+                for i in range(start, end, MAX_CHUNK_CHARS):
+                    atoms.append(_Atom(i, min(i + MAX_CHUNK_CHARS, end), True, False, crumb()))
+        else:
+            for s, e in _split_span(content, start, end):
+                atoms.append(_Atom(s, e, False, bool(header and not atomic), crumb()))
+    return atoms
 
+
+def _blocks(content: str) -> list[tuple[int, int, bool]]:
+    """(start, end, atomic) blocks: fenced code spans first, then paragraphs
+    split on blank lines; all-| tables are atomic too."""
+    spans: list[tuple[int, int, bool]] = []
+    fences = _fence_spans(content)
+    pos = 0
+    for fs, fe in fences:
+        spans.extend(_paragraphs(content, pos, fs))
+        spans.append((fs, fe, True))
+        pos = fe
+    spans.extend(_paragraphs(content, pos, len(content)))
+    return spans
+
+
+def _fence_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    open_start: int | None = None
+    for m in FENCE_RE.finditer(text):
+        if open_start is None:
+            open_start = m.start()
+        else:
+            line_end = text.find('\n', m.end())
+            spans.append((open_start, len(text) if line_end == -1 else line_end))
+            open_start = None
+    if open_start is not None:  # unclosed fence runs to end of text
+        spans.append((open_start, len(text)))
+    return spans
+
+
+def _paragraphs(text: str, start: int, end: int) -> list[tuple[int, int, bool]]:
+    out: list[tuple[int, int, bool]] = []
+    pos = start
+    for m in BLANK_RE.finditer(text, start, end):
+        _add_paragraph(text, pos, m.start(), out)
+        pos = m.end()
+    _add_paragraph(text, pos, end, out)
+    return out
+
+
+def _add_paragraph(text: str, s: int, e: int, out: list[tuple[int, int, bool]]) -> None:
+    while s < e and text[s].isspace():
+        s += 1
+    while e > s and text[e - 1].isspace():
+        e -= 1
+    if s >= e:
+        return
+    lines = [ln.strip() for ln in text[s:e].splitlines() if ln.strip()]
+    atomic = bool(lines) and all(ln.startswith('|') for ln in lines)
+    out.append((s, e, atomic))
+
+
+def _split_span(text: str, s: int, e: int, level: int = 0) -> list[tuple[int, int]]:
+    """Recursive boundary ladder: lines → sentence terminators → whitespace →
+    hard slice. Every returned span is ≤ MAX_CHARS."""
+    if e - s <= MAX_CHARS:
+        return [(s, e)]
+    if level >= 3:
+        return [(i, min(i + MAX_CHARS, e)) for i in range(s, e, MAX_CHARS)]
+    pattern = (re.compile(r'\n'), SENTENCE_RE, WS_RE)[level]
+    points = [m.end() for m in pattern.finditer(text, s, e) if m.end() < e]
+    if not points:
+        return _split_span(text, s, e, level + 1)
+    out: list[tuple[int, int]] = []
+    prev = s
+    for p in points + [e]:
+        out.extend(_split_span(text, prev, p, level + 1))
+        prev = p
+    return out
+
+
+# ── packing, overlap, min-merge ────────────────────────────────────────────
+
+def _pack_atoms(atoms: list[_Atom]) -> list[tuple[int, int, bool, str]]:
+    """Greedy-pack atoms into ≤MAX_CHARS chunk spans with ~OVERLAP_CHARS
+    boundary-aligned overlap. Headings flush a substantive chunk so chunks
+    don't straddle sections."""
+    spans: list[tuple[int, int, bool, str]] = []
+    i, n = 0, len(atoms)
+    while i < n:
+        start, end, oversized = atoms[i].start, atoms[i].end, atoms[i].oversized
+        j = i
+        if not oversized:
+            while j + 1 < n:
+                na = atoms[j + 1]
+                if na.oversized:
+                    break
+                if na.heading and end - start >= MIN_CHARS:
+                    break
+                if na.end - start > MAX_CHARS:
+                    break
+                j += 1
+                end = na.end
+        # The last atom's crumb reflects the deepest section this chunk
+        # reaches — a heading merged mid-chunk still shows up.
+        spans.append((start, end, oversized, atoms[j].crumb))
+
+        nxt = j + 1
+        if nxt < n and not oversized and not atoms[nxt].oversized and not atoms[nxt].heading:
+            # Rewind to the earliest atom boundary within the overlap budget.
+            k = j
+            while k - 1 > i and end - atoms[k - 1].start <= OVERLAP_CHARS:
+                k -= 1
+            if k > i:
+                nxt = k
+        i = nxt
+    return spans
+
+
+def _merge_small(
+    spans: list[tuple[int, int, bool, str]],
+    content: str,
+) -> list[tuple[int, int, bool, str]]:
+    """Merge <MIN_CHARS chunks into a neighbor when the result stays ≤MAX_CHARS.
+    A document whose only chunk is tiny is kept as-is."""
+    merged: list[tuple[int, int, bool, str]] = []
+    for span in spans:
+        start, end, oversized, _ = span
+        if (
+            merged
+            and len(content[start:end].strip()) < MIN_CHARS
+            and not oversized
+            and not merged[-1][2]
+            and end - merged[-1][0] <= MAX_CHARS
+        ):
+            prev = merged[-1]
+            merged[-1] = (prev[0], end, prev[2], prev[3])
+        else:
+            merged.append(span)
+    if len(merged) > 1:
+        start, end, oversized, _ = merged[0]
+        nxt = merged[1]
+        if (
+            len(content[start:end].strip()) < MIN_CHARS
+            and not oversized
+            and not nxt[2]
+            and nxt[1] - start <= MAX_CHARS
+        ):
+            merged[1] = (start, nxt[1], nxt[2], nxt[3])
+            merged.pop(0)
+    return merged
+
+
+# ── pages + persistence ────────────────────────────────────────────────────
 
 def chunk_pages(page_contents: list[tuple[int, str]]) -> list[Chunk]:
     """Chunk multiple pages, preserving page numbers. Each (page_number, content) tuple."""
@@ -224,22 +331,3 @@ async def _store_chunks_on_conn(
         [c.header_breadcrumb for c in chunks],
     )
     logger.info("Stored %d chunks for doc %s", len(chunks), document_id[:8])
-
-
-def _split_paragraphs(text: str) -> list[str]:
-    """Split on double newlines, preserving paragraph structure."""
-    parts = re.split(r'\n\s*\n', text)
-    return [p.strip() for p in parts if p.strip()]
-
-
-def _get_overlap(blocks: list[str], target_tokens: int) -> tuple[list[str], int]:
-    """Get trailing blocks that fit within target_tokens for overlap."""
-    result: list[str] = []
-    tokens = 0
-    for block in reversed(blocks):
-        block_tokens = _estimate_tokens(block)
-        if tokens + block_tokens > target_tokens:
-            break
-        result.insert(0, block)
-        tokens += block_tokens
-    return result, tokens

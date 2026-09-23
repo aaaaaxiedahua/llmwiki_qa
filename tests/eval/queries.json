@@ -1,0 +1,224 @@
+[
+  {
+    "query": "什么是FDE，前进部署工程师是做什么的",
+    "expected": [
+      "fde-forward-deployed-engineer",
+      "什么是fde",
+      "fde-case-100"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "FDE 有哪些典型案例",
+    "expected": [
+      "fde-case-100",
+      "FDE案例100"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "RAG 的混合检索怎么实现",
+    "expected": [
+      "hybrid-search-rrf",
+      "rag-step-by-step-commands",
+      "RAG分步体验命令"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "RRF 融合排序的原理是什么",
+    "expected": [
+      "hybrid-search-rrf",
+      "jieba-rank-bm25"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "查询改写怎么做",
+    "expected": [
+      "query-rewrite"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "BGE 中文嵌入模型",
+    "expected": [
+      "bge-large-zh-v1.5"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "重排序模型用哪个",
+    "expected": [
+      "bge-reranker-v2-m3"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "ChromaDB 向量库怎么部署",
+    "expected": [
+      "chromadb",
+      "RAG分步体验命令",
+      "rag-step-by-step-commands"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "jieba 分词和 BM25 排序",
+    "expected": [
+      "jieba-rank-bm25",
+      "什么事jieba"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "DeepSeek 模型在 RAG 里怎么用",
+    "expected": [
+      "deepseek"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "PDF 图片和文字分层提取",
+    "expected": [
+      "pdf-image-text-layer-separation"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "HJ212 协议是什么",
+    "expected": [
+      "hj212-protocol"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "环保数据平台的技术架构",
+    "expected": [
+      "eco-environment-data-platform",
+      "eco-data-platform-tech-summary",
+      "数据平台-项目技术总结"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "RustFS 对象存储怎么部署",
+    "expected": [
+      "rustfs"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "SnailJob 分布式任务调度",
+    "expected": [
+      "snail-job"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "开放 API 的鉴权和安全体系",
+    "expected": [
+      "open-api-security-system"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "幂等设计怎么保证",
+    "expected": [
+      "idempotent-design"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "离线内网环境怎么交付",
+    "expected": [
+      "offline-intranet-delivery"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "数据采集的可靠性怎么保障",
+    "expected": [
+      "collection-reliability-system"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "规范驱动开发 SDD 是什么",
+    "expected": [
+      "sdd-spec-driven-development",
+      "openspec"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "在线检索失败时怎么静默降级",
+    "expected": [
+      "online-retrieval-silent-degradation"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "检索结果的元数据溯源",
+    "expected": [
+      "retrieval-metadata-traceability"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "RAG 文档摄入流水线",
+    "expected": [
+      "rag-ingestion-pipeline"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "AI 落地最后一公里的问题",
+    "expected": [
+      "ai-last-mile"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "隐性知识怎么结构化沉淀",
+    "expected": [
+      "tacit-knowledge-structuralization"
+    ],
+    "tier": "direct"
+  },
+  {
+    "query": "防止用户重复点击提交按钮",
+    "expected": [
+      "idempotent-design"
+    ],
+    "tier": "paraphrase"
+  },
+  {
+    "query": "服务器上不了网怎么交付给客户",
+    "expected": [
+      "offline-intranet-delivery"
+    ],
+    "tier": "paraphrase"
+  },
+  {
+    "query": "搜索接口挂了就当没这回事",
+    "expected": [
+      "online-retrieval-silent-degradation"
+    ],
+    "tier": "paraphrase"
+  },
+  {
+    "query": "把好几路搜索结果的排名合并成一个",
+    "expected": [
+      "hybrid-search-rrf"
+    ],
+    "tier": "paraphrase"
+  },
+  {
+    "query": "怎么知道某条结论是从哪个文件来的",
+    "expected": [
+      "retrieval-metadata-traceability"
+    ],
+    "tier": "paraphrase"
+  }
+]

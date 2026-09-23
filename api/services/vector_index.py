@@ -1,5 +1,9 @@
 """Vector-leg orchestration: embedding production and semantic search.
 
+Only wiki pages (source_kind='wiki') enter the vector corpus — sources stay
+searchable via FTS and citations but are never embedded. The distilled wiki
+is the semantic layer; raw source noise never enters the vector space.
+
 Production is a serial pull worker in the same style as the ingestion
 worker: it polls document_chunks for rows missing a current-model registry
 entry, cleans the texts (rule-based, embedding-leg only), embeds them in
@@ -34,7 +38,8 @@ async def embedding_stats(db) -> dict:
     """Progress of the vector index: total embeddable chunks vs. done."""
     cursor = await db.execute(
         "SELECT COUNT(*) FROM document_chunks dc "
-        "JOIN documents d ON d.id = dc.document_id WHERE d.status != 'failed'"
+        "JOIN documents d ON d.id = dc.document_id "
+        "WHERE d.status != 'failed' AND d.source_kind = 'wiki'"
     )
     total = (await cursor.fetchone())[0]
     cursor = await db.execute(
@@ -56,12 +61,17 @@ async def embed_pending(db, batch_size: int | None = None) -> int:
     # Chunk rows are immutable per chunk_id (re-chunking deletes + reinserts
     # with new ids), so "no registry row for the current model" covers both
     # new and stale chunks. Fetch extra because cleaning may skip some.
+    # Only wiki pages are embedded: sources stay FTS/citation-only — the
+    # distilled wiki is the semantic corpus (nashsu-style), so distillation
+    # noise and source boilerplate never enter the vector space.
     cursor = await db.execute(
-        "SELECT dc.id, COALESCE(NULLIF(dc.source_content, ''), dc.content) "
+        "SELECT dc.id, COALESCE(NULLIF(dc.source_content, ''), dc.content), "
+        "d.title, dc.header_breadcrumb "
         "FROM document_chunks dc "
         "JOIN documents d ON d.id = dc.document_id "
         "LEFT JOIN chunk_embeddings ce ON ce.chunk_id = dc.id AND ce.model = ? "
         "WHERE ce.chunk_id IS NULL AND d.status != 'failed' "
+        "AND d.source_kind = 'wiki' "
         "ORDER BY dc.rowid LIMIT ?",
         (current_model(), limit * 4),
     )
@@ -69,11 +79,12 @@ async def embed_pending(db, batch_size: int | None = None) -> int:
     if not rows:
         return 0
 
-    chunk_ids = [r[0] for r in rows]
     cleaned = clean_chunk_texts([r[1] for r in rows])
+    # Embedding input is nashsu-style: document title + heading breadcrumb +
+    # chunk text, so a chunk vector carries its document/section context.
     to_embed = [
-        (cid, text)
-        for cid, text in zip(chunk_ids, cleaned, strict=True)
+        (r[0], "\n".join(p for p in (r[2], r[3], text) if p))
+        for r, text in zip(rows, cleaned, strict=True)
         if text is not None
     ][:limit]
     if not to_embed:
@@ -132,7 +143,8 @@ async def search(db, query: str, limit: int = 10) -> list[dict]:
         f"SELECT dc.id, dc.document_id, dc.content, dc.page, "
         f"d.filename, d.title, d.path, d.relative_path, d.source_kind "
         f"FROM document_chunks dc JOIN documents d ON d.id = dc.document_id "
-        f"WHERE dc.id IN ({id_placeholders}) AND d.status != 'failed'",
+        f"WHERE dc.id IN ({id_placeholders}) AND d.status != 'failed' "
+        f"AND d.source_kind = 'wiki'",
         [chunk_id for chunk_id, _ in hits],
     )
     chunk_meta = {r[0]: r for r in await cursor.fetchall()}

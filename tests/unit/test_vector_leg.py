@@ -66,13 +66,14 @@ async def db(tmp_path, monkeypatch):
     await conn.close()
 
 
-async def _doc_with_chunks(db, texts: list[str]) -> str:
+async def _doc_with_chunks(db, texts: list[str], source_kind: str = "wiki") -> str:
     doc_id = uuid.uuid4().hex
+    rel = f"{doc_id[:8]}.md"
     await db.execute(
         "INSERT INTO documents (id, user_id, filename, title, path, relative_path, "
         "source_kind, file_type, status, content, tags, version, document_number) "
-        "VALUES (?, 'u1', 't.md', 'T', '/', 't.md', 'source', 'md', 'ready', '', '[]', 0, 1)",
-        (doc_id,),
+        "VALUES (?, 'u1', 't.md', 'T', '/', ?, ?, 'md', 'ready', '', '[]', 0, 1)",
+        (doc_id, rel, source_kind),
     )
     for i, text in enumerate(texts):
         await db.execute(
@@ -127,6 +128,48 @@ async def test_embed_pending_skips_failed_docs_and_short_chunks(db, monkeypatch)
 
     monkeypatch.setattr(vector_index, "embed_texts", fake_embed)
     assert await vector_index.embed_pending(db) == 0
+
+
+async def test_embed_pending_wiki_only(db, monkeypatch):
+    """原文档(source)不嵌向量;wiki 页照常。"""
+    await _doc_with_chunks(db, ["原文档的 chunk,足够长以便通过清洗门槛。"], source_kind="source")
+    wiki_id = await _doc_with_chunks(db, ["wiki 页的 chunk,足够长以便通过清洗门槛。"])
+
+    async def fake_embed(texts):
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(vector_index, "embed_texts", fake_embed)
+    assert await vector_index.embed_pending(db) == 1  # 只有 wiki 页那一条
+
+    stats = await vector_index.embedding_stats(db)
+    assert stats["total_chunks"] == 1  # 统计口径同样只算 wiki
+
+    monkeypatch.setattr(settings, "EMBEDDING_BASE_URL", "https://x/v1")
+    monkeypatch.setattr(settings, "EMBEDDING_API_KEY", "sk")
+    results = await vector_index.search(db, "查询", limit=5)
+    assert [r["doc_id"] for r in results] == [wiki_id]
+
+
+async def test_embed_input_includes_title_and_breadcrumb(db, monkeypatch):
+    """嵌入输入按 nashsu 风格拼接：文档标题 + 面包屑 + chunk 正文。"""
+    doc_id = await _doc_with_chunks(db, ["足够长的正文内容，用于验证嵌入输入拼接是否包含标题与面包屑信息。"])
+    await db.execute("UPDATE documents SET title = '标题A' WHERE id = ?", (doc_id,))
+    await db.execute(
+        "UPDATE document_chunks SET header_breadcrumb = '章 > 节' WHERE document_id = ?",
+        (doc_id,),
+    )
+    await db.commit()
+
+    captured: list[str] = []
+
+    async def fake_embed(texts):
+        captured.extend(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(vector_index, "embed_texts", fake_embed)
+    assert await vector_index.embed_pending(db) == 1
+    assert captured[0].startswith("标题A\n章 > 节\n")
+    assert "足够长的正文内容" in captured[0]
 
 
 async def test_vector_search_aggregates_to_docs(db, monkeypatch):
@@ -229,6 +272,23 @@ def test_backend_switch_local_offline(monkeypatch):
         importlib.util.find_spec("fastembed") is not None
     )
     assert embeddings.current_model() == embeddings.DEFAULT_LOCAL_MODEL
+
+
+def test_backend_switch_st_reuses_hf_cache(monkeypatch):
+    from services import embeddings
+
+    monkeypatch.setattr(settings, "EMBEDDING_BACKEND", "st")
+    monkeypatch.setattr(settings, "EMBEDDING_BASE_URL", "")
+    monkeypatch.setattr(settings, "EMBEDDING_API_KEY", "")
+    import importlib.util
+
+    assert embeddings.embedding_enabled() == (
+        importlib.util.find_spec("sentence_transformers") is not None
+    )
+    assert embeddings.current_model() == embeddings.DEFAULT_ST_MODEL
+
+    monkeypatch.setattr(settings, "ST_EMBEDDING_MODEL", "BAAI/other-model")
+    assert embeddings.current_model() == "BAAI/other-model"
 
 
 # --- RRF fusion ---

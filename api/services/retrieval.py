@@ -13,6 +13,7 @@ off, Stage 1 is exactly the FTS path and results are unchanged.
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Protocol
 
@@ -47,20 +48,21 @@ def build_match_query(query: str) -> str:
 async def search_documents(db, query: str, limit: int = 10) -> list[dict]:
     """Stage 1: chunk-level FTS search aggregated to documents, + title boost."""
     match = build_match_query(query)
-    if not match:
-        return []
-
-    cursor = await db.execute(
-        "SELECT dc.document_id, dc.content, dc.page, d.filename, d.title, "
-        "d.path, d.relative_path, d.source_kind, bm25(chunks_fts) AS rank "
-        "FROM chunks_fts "
-        "JOIN document_chunks dc ON dc.rowid = chunks_fts.rowid "
-        "JOIN documents d ON d.id = dc.document_id "
-        "WHERE chunks_fts MATCH ? AND d.status != 'failed' "
-        "ORDER BY rank LIMIT ?",
-        (match, limit * 4),
-    )
-    rows = rows_to_dicts(cursor, await cursor.fetchall())
+    # 词全被 trigram 的 3 字门槛丢弃时（如"幂等"）跳过 FTS 腿，
+    # 但标题 LIKE 兜底不受此限，必须照常执行。
+    rows: list[dict] = []
+    if match:
+        cursor = await db.execute(
+            "SELECT dc.document_id, dc.content, dc.page, d.filename, d.title, "
+            "d.path, d.relative_path, d.source_kind, bm25(chunks_fts) AS rank "
+            "FROM chunks_fts "
+            "JOIN document_chunks dc ON dc.rowid = chunks_fts.rowid "
+            "JOIN documents d ON d.id = dc.document_id "
+            "WHERE chunks_fts MATCH ? AND d.status != 'failed' "
+            "ORDER BY rank LIMIT ?",
+            (match, limit * 4),
+        )
+        rows = rows_to_dicts(cursor, await cursor.fetchall())
 
     terms = [t.lower() for t in re.findall(r"[A-Za-z0-9_]+|[一-鿿]+", query)]
     docs: dict[str, dict] = {}
@@ -123,6 +125,43 @@ async def search_documents(db, query: str, limit: int = 10) -> list[dict]:
             else:
                 entry["score"] += 10.0 * matched
 
+    # Content LIKE fallback for 2-char terms: the trigram index has a 3-char
+    # floor, so terms like "幂等"/"排名" can never hit it. A LIKE scan over
+    # chunk bodies is slow, but such queries are rare and this is their only
+    # way to reach body text at all.
+    short_terms = [t for t in terms if len(t) == 2]
+    if short_terms:
+        like = " OR ".join("lower(dc.content) LIKE ?" for _ in short_terms)
+        params = [f"%{t}%" for t in short_terms]
+        cur = await db.execute(
+            f"SELECT dc.document_id, dc.content, dc.page, d.filename, d.title, "
+            f"d.path, d.relative_path, d.source_kind "
+            f"FROM document_chunks dc JOIN documents d ON d.id = dc.document_id "
+            f"WHERE ({like}) AND d.status != 'failed' LIMIT ?",
+            (*params, limit * 2),
+        )
+        for r in rows_to_dicts(cur, await cur.fetchall()):
+            matched = sum(1 for t in short_terms if t in r["content"].lower())
+            entry = docs.get(r["document_id"])
+            if entry is None:
+                docs[r["document_id"]] = {
+                    "doc_id": r["document_id"],
+                    "filename": r["filename"],
+                    "title": r["title"] or r["filename"],
+                    "path": r["path"],
+                    "relative_path": r["relative_path"],
+                    "source_kind": r.get("source_kind", "source"),
+                    "score": 4.0 * matched,
+                    "hits": 0,
+                    "snippet": r["content"][:300],
+                    "page": r["page"],
+                }
+            else:
+                entry["score"] += 4.0 * matched
+                if not entry["snippet"]:
+                    entry["snippet"] = r["content"][:300]
+                    entry["page"] = r["page"]
+
     results = sorted(docs.values(), key=lambda e: e["score"], reverse=True)
     return results[:limit]
 
@@ -147,6 +186,22 @@ def rrf_fuse(legs: list[list[dict]], limit: int) -> list[dict]:
     return results[:limit]
 
 
+GRAPH_MIN_RATIO = 0.15  # full vector coverage leaves this graph share
+GRAPH_MAX_RATIO = 0.30  # sparse vector coverage moves toward this
+
+
+def graph_quota(total: int, vector_coverage: float) -> int:
+    """Reserve 15–30% of the result window for graph neighbors (nashsu-style).
+
+    The quota adapts to vector coverage: when semantic retrieval comes back
+    thin, graph expansion gets more seats to backstop it.
+    """
+    if total < 2:
+        return 0
+    ratio = GRAPH_MAX_RATIO - (GRAPH_MAX_RATIO - GRAPH_MIN_RATIO) * vector_coverage
+    return max(1, min(total - 1, math.ceil(total * ratio)))
+
+
 async def retrieve(
     db,
     query: str,
@@ -158,6 +213,10 @@ async def retrieve(
 
     use_vector=None follows server config; explicit False forces the pure
     FTS leg (chat "fast" mode) even when embeddings are configured.
+
+    Graph expansion is quota-reserved, not score-competitive: neighbor docs
+    take reserved seats at the tail of the window rather than fighting seeds
+    on score, so weak FTS/vector rounds still surface graph context.
     """
     fts_results = await search_documents(db, query, limit=seed_limit)
 
@@ -165,6 +224,7 @@ async def retrieve(
     vector_on = vector_index.vector_leg_enabled() if use_vector is None else (
         use_vector and vector_index.vector_leg_enabled()
     )
+    vec_results: list[dict] = []
     if vector_on:
         vec_results = await vector_index.search(db, query, limit=seed_limit)
         seeds = rrf_fuse([fts_results, vec_results], limit=seed_limit)
@@ -173,19 +233,18 @@ async def retrieve(
     if not seeds:
         return []
 
+    total = seed_limit + expand_per_seed
+    coverage = min(len(vec_results), seed_limit) / seed_limit if vector_on else 0.0
+    quota = graph_quota(total, coverage)
+
     seed_ids = [s["doc_id"] for s in seeds]
     related = await expand_related(db, seed_ids, per_seed=expand_per_seed)
+    candidates = [r for r in related if r["doc_id"] not in set(seed_ids)][:quota]
+    for r in candidates:
+        r["graph_expansion"] = True
 
-    by_id = {s["doc_id"]: s for s in seeds}
-    for rel in related:
-        existing = by_id.get(rel["doc_id"])
-        if existing:
-            existing["score"] += rel["score"]
-        else:
-            by_id[rel["doc_id"]] = rel
-
-    results = sorted(by_id.values(), key=lambda e: e["score"], reverse=True)
-    return results[: seed_limit + expand_per_seed]
+    # Unused quota seats return to the seeds.
+    return seeds[: total - len(candidates)] + candidates
 
 
 async def fetch_context_pages(db, candidates: list[dict]) -> list[dict]:

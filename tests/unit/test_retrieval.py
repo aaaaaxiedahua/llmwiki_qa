@@ -88,6 +88,57 @@ async def test_search_documents_title_boost(db):
     assert results[0]["doc_id"] == a, titles
 
 
+async def test_search_documents_short_term_falls_back_to_title_leg(db):
+    """2 字词被 trigram 门槛丢弃后，标题 LIKE 兜底仍应命中。"""
+    a = await _doc(db, "a.md", "幂等设计", "wiki")
+    await _chunk(db, a, 0, "与查询无关的正文内容占位")
+    await db.commit()
+
+    results = await search_documents(db, "幂等")
+    assert results and results[0]["doc_id"] == a
+
+
+async def test_search_documents_short_term_falls_back_to_content_leg(db):
+    """2 字词的正文 LIKE 兜底：标题不含该词的文档也能命中并带摘要。"""
+    a = await _doc(db, "a.md", "可靠性设计", "wiki")
+    await _chunk(db, a, 0, "本文介绍排名算法与重试机制的设计")
+    b = await _doc(db, "b.md", "无关标题", "wiki")
+    await _chunk(db, b, 0, "红烧肉的做法与火候")
+    await db.commit()
+
+    results = await search_documents(db, "排名")
+    assert results and results[0]["doc_id"] == a
+    assert "排名" in results[0]["snippet"]
+
+
+def test_graph_quota_adapts_to_vector_coverage():
+    from services.retrieval import graph_quota
+
+    assert graph_quota(11, 0.0) == 4  # 向量缺席 → 上限 30%
+    assert graph_quota(11, 1.0) == 2  # 向量满覆盖 → 下限 15%
+    assert graph_quota(1, 0.0) == 0   # 窗口太小不保留
+
+
+async def test_retrieve_reserves_graph_quota_seats(db):
+    """图谱邻居占尾部保留席位，不靠分数挤进种子区。"""
+    seeds = []
+    for i in range(6):
+        d = await _doc(db, f"s{i}.md", f"种子{i}", "wiki")
+        await _chunk(db, d, 0, f"配额测试的共同关键词内容第{i}篇")
+        seeds.append(d)
+    neighbor = await _doc(db, "n.md", "图谱邻居", "wiki")  # 无 chunk，纯图谱进入
+    await _ref(db, seeds[0], neighbor, "links_to")
+    stranger = await _doc(db, "x.md", "无关文档", "wiki")
+    await _chunk(db, stranger, 0, "完全无关的内容")
+    await db.commit()
+
+    results = await retrieve(db, "配额测试的共同关键词", use_vector=False)
+    ids = [r["doc_id"] for r in results]
+    assert ids[-1] == neighbor
+    assert results[-1]["graph_expansion"] is True
+    assert stranger not in ids
+
+
 async def test_expand_related_links_and_source_overlap(db):
     seed = await _doc(db, "seed.md", "种子页", "wiki")
     linked = await _doc(db, "linked.md", "被链接页", "wiki")

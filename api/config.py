@@ -64,11 +64,14 @@ class Settings(BaseSettings):
     # EMBEDDING_BACKEND=api  —— 需配齐 EMBEDDING_BASE_URL/API_KEY/MODEL，
     #     独立于 LLM_*（聊天代理不一定有 embeddings 端点），SiliconFlow 有免费 BGE
     # EMBEDDING_BACKEND=local —— fastembed 本地跑 BGE（pip install fastembed），完全离线
-    EMBEDDING_BACKEND: str = "api"  # "api" | "local"
+    # EMBEDDING_BACKEND=st   —— sentence-transformers 读 HuggingFace 缓存
+    #     （pip install sentence-transformers），已下载过的模型直接复用
+    EMBEDDING_BACKEND: str = "api"  # "api" | "local" | "st"
     EMBEDDING_BASE_URL: str = ""
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
     LOCAL_EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
+    ST_EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
     EMBEDDING_BATCH_SIZE: int = 32
     # 向量库（Qdrant）：qdrant（本地嵌入模式，零服务）/ qdrant-server（Docker 服务）
     VECTOR_BACKEND: str = "qdrant"
